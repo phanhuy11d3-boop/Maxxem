@@ -1,0 +1,54 @@
+name: CryptoSentinel CI Guard
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  guard:
+    name: Code Quality & Security Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: pip install -r requirements.txt
+
+      # ── Bảo mật: không được hardcode secrets vào code ──────────────────────
+      - name: "[Security] No hardcoded API keys"
+        run: |
+          if grep -rn "gsk_" --include="*.py" .; then
+            echo "❌ FAIL: Phát hiện Groq API key bị hardcode trong .py file!"
+            exit 1
+          fi
+          echo "✅ PASS: Không có Groq API key bị hardcode."
+
+      - name: "[Security] No hardcoded DATABASE_URL"
+        run: |
+          if grep -rn "postgresql://" --include="*.py" .; then
+            echo "❌ FAIL: Phát hiện Database URL bị hardcode trong .py file!"
+            exit 1
+          fi
+          echo "✅ PASS: Không có Database URL bị hardcode."
+
+      # ── Kiến trúc: ngăn dùng lại module cũ đã bị xóa ──────────────────────
+      - name: "[Architecture] No import from storage.sqlite"
+        run: |
+          if grep -rn "from storage.sqlite" --include="*.py" .; then
+            echo "❌ FAIL: Phát hiện import từ storage.sqlite (đã deprecated). Dùng storage.postgres."
+            exit 1
+          fi
+          echo "✅ PASS: Không có import từ module cũ storage.sqlite."
+
+      # ── Chất lượng code: validate models không bị vỡ ──────────────────────
+      - name: "[Test] Validate Article model (Smoke Test)"
+        run: python models/article.py

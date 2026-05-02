@@ -1,0 +1,30 @@
+name: CryptoSentinel Scraper
+
+on:
+  schedule:
+    - cron: '0 * * * *'  # Chạy tự động mỗi 1 giờ
+  workflow_dispatch:       # Nút bấm chạy thủ công trên GitHub UI
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip' # Tối ưu tốc độ cài thư viện
+
+      - name: Install Dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run CryptoSentinel Pipeline
+        run: python main.py
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
