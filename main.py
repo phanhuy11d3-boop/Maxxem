@@ -78,20 +78,26 @@ def main():
             for article in batch:
                 success = analyze_article(article, groq_client)
                 if success:
-                    mark_processed(
-                        article_id=article.id,
-                        sentiment=article.sentiment,
-                        market_impact=article.market_impact,
-                        key_takeaway=article.key_takeaway
-                    )
-                    ai_processed += 1
+                    # Chuyển trạng thái RAM thành True để is_actionable hoạt động đúng
                     article.processed = True
 
-                    # Gửi Telegram (bên trong hàm đã check is_actionable)
+                    # Bước 1: Gửi Telegram TRƯỚC
                     sent = send_telegram(article)
+
                     if not sent and article.is_actionable:
-                        # Chỉ đếm lỗi nếu bài ĐÁNG GỬI mà không gửi được
+                        # Gửi thất bại: Đếm lỗi và KHÔNG LƯU DB để lần sau AI phân tích lại
                         tg_errors += 1
+                        article.processed = False # Rollback trạng thái RAM
+                        logger.warning(f"Telegram từ chối bài {article.id[:12]}. Bỏ qua lưu DB để retry lần sau.")
+                    else:
+                        # Bước 2: Chỉ lưu DB khi gửi thành công (hoặc bài Neutral không cần gửi)
+                        mark_processed(
+                            article_id=article.id,
+                            sentiment=article.sentiment,
+                            market_impact=article.market_impact,
+                            key_takeaway=article.key_takeaway
+                        )
+                        ai_processed += 1
                 else:
                     logger.warning(f"Phân tích thất bại bài {article.id[:12]}... Tăng retry_count.")
                     increment_retry(article.id)

@@ -59,4 +59,24 @@
     * **Nguyên tắc kiến trúc:** Trong các hệ thống Agent, không nên phụ thuộc vào 1 model duy nhất. Nên có cơ chế cấu hình model qua biến môi trường hoặc có danh sách fallback.
 * **Rule bổ sung vào `monitor_agent.md`:** Khi AI lỗi hàng loạt với code 400, phải kiểm tra tính khả dụng của Model ID trước khi yêu cầu người dùng đổi API Key.
 
+## 8. Bài học về Lỗi Logic Local và Lỗ hổng Giám sát (Audit Blindspots)
+* **Vấn đề phát hiện:** AI ở phiên trước đã sửa file `main.py` ở local (xoá biến `article.processed = True` trong RAM) nhưng không commit, gây lệch pha nghiêm trọng giữa local và GitHub. Hơn nữa, cả 3 lớp giám sát đều "mù" trước lỗi này:
+    1. **Audit Agent (`audit_agent.py`)** chỉ quét Database (trạng thái tĩnh), không bắt được lỗi logic runtime.
+    2. **AI Reviewer (`check_response.py`)** có khả năng bắt lỗi logic nhưng bị AI và USER quên không gọi thủ công.
+    3. AI hỗ trợ (là tôi) khi debug đã bỏ sót file `check_response.py` vì chỉ tập trung vào các file USER tag.
+* **Nguyên nhân gốc rễ:** 
+    * `mark_processed()` chỉ cập nhật DB, nhưng không cập nhật state của object `article` trong RAM, khiến hàm `is_actionable` (chạy ngay sau đó) bị false và chặn việc gửi Telegram.
+    * Quá tin tưởng vào Audit Agent chạy bằng cơm (DB checker) mà quên mất các lỗi logic luồng (flow logic).
+* **Cách khắc phục & Rule mới:**
+    * **Tuyệt đối không để lại "code rác/code nháp" (unstaged changes) ở local.** Đã sửa là phải test và commit/revert dứt điểm.
+    * Phải nhớ rằng cập nhật DB (`mark_processed`) **không đồng nghĩa** với việc object trong bộ nhớ Python tự động được cập nhật. Phải set state bằng tay (`article.processed = True`) nếu hàm sau đó cần dùng tới nó.
+    * **Luôn rà soát toàn bộ thư mục `scripts/`** trước khi kết luận hệ thống thiếu tính năng, tránh bỏ quên các Agent đã được xây dựng từ trước.
+
+## 9. Bài học về Giao tiếp & Thống nhất Kế hoạch (Planning first)
+* **Vấn đề phát hiện:** Tự tiện tạo ra các file script mới (như `db_viewer.py`, `db_actionable.py`) để giải quyết tình huống thay vì đọc/phân tích mã nguồn, thảo luận và lên kế hoạch (plan) với USER trước. Điều này làm rác thư mục, đi ngược lại triết lý Lean Architecture và phá vỡ luồng pair-programming.
+* **Cách khắc phục:**
+    * Tuyệt đối KHÔNG ĐƯỢC tự ý tạo file mới, viết script nháp, hay sửa code khi chưa bàn bạc và được sự đồng ý của USER.
+    * Khi USER đặt câu hỏi (VD: "Tại sao lỗi?"), công việc của AI là **phân tích tĩnh (static analysis)** mã nguồn hiện tại, log, và database để suy luận, sau đó trình bày nguyên nhân. Không được tự lấy cớ "để xem cho rõ" rồi đẻ thêm file.
+    * Mọi file sinh ra ngoài `implementation_plan.md` đều bị coi là rác nếu không được thông qua.
+
 *(File này sẽ liên tục được AI chủ động cập nhật nếu phát sinh thêm bất cứ sai sót nào trong quá trình xây dựng CryptoSentinel).*
