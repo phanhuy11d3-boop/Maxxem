@@ -29,8 +29,8 @@ from models.article import Article, MarketImpact
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Supabase cung cấp connection string dạng:
-# postgresql://postgres.[ref]:[password]@aws-0-[region].pooler.supabase.com:6543/postgres
+# Cấu trúc kết nối Supabase (Connection String) dạng:
+# postgres-protocol://user.[ref]:[password]@host.com:6543/postgres
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
 MAX_RETRY = 3       # Số lần tối đa retry AI cho 1 bài báo
