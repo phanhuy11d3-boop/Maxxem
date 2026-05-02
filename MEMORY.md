@@ -79,4 +79,10 @@
     * Khi USER đặt câu hỏi (VD: "Tại sao lỗi?"), công việc của AI là **phân tích tĩnh (static analysis)** mã nguồn hiện tại, log, và database để suy luận, sau đó trình bày nguyên nhân. Không được tự lấy cớ "để xem cho rõ" rồi đẻ thêm file.
     * Mọi file sinh ra ngoài `implementation_plan.md` đều bị coi là rác nếu không được thông qua.
 
+## 10. Bài học về Đồng bộ hóa (Git Synchronization)
+* **Vấn đề:** Sau khi sửa file ở môi trường local, nếu không thực hiện `git push` ngay lập tức, các worker (như GitHub Actions) sẽ vẫn chạy code cũ, dẫn đến tình trạng lỗi cũ vẫn tái diễn trên server dù local đã sửa xong.
+* **Quy tắc bắt buộc:** 
+    * PHẢI tự động thực hiện `git add`, `git commit` và `git push` ngay sau khi kết thúc một lượt chỉnh sửa file và được USER xác nhận thành công. 
+    * Tuyệt đối không để code nằm chờ ở local (dạng unstaged hoặc chưa push), đảm bảo môi trường local và GitHub luôn luôn khớp nhau 100% trong mọi tình huống.
+
 *(File này sẽ liên tục được AI chủ động cập nhật nếu phát sinh thêm bất cứ sai sót nào trong quá trình xây dựng CryptoSentinel).*
