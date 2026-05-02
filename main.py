@@ -85,6 +85,7 @@ def main():
                         key_takeaway=article.key_takeaway
                     )
                     ai_processed += 1
+                    article.processed = True
 
                     # Gửi Telegram (bên trong hàm đã check is_actionable)
                     sent = send_telegram(article)
