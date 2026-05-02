@@ -58,7 +58,7 @@ def extract_json_from_text(text: str) -> Optional[Dict[str, Any]]:
             
     return None
 
-def analyze_article(article: Article, client: Groq, model: str = "llama3-8b-8192") -> bool:
+def analyze_article(article: Article, client: Groq, model: str = "llama-3.3-70b-versatile") -> bool:
     """
     Gọi Groq API để phân tích Article. 
     Nếu thành công, update trực tiếp vào object Article.
