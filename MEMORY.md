@@ -41,4 +41,14 @@
     * Bất kỳ rule nào về cách refactor/nâng cấp infrastructure.
 * **Cách khắc phục:** `monitor_agent.md` phải được cập nhật để bổ sung checklist giám sát DB layer và network resilience tương đương với rigor hiện có cho LLM layer.
 
+## 6. Bài học về CI Guard False Positive (Comment chứa Pattern nhạy cảm)
+* **Vấn đề phát hiện:** File `storage/postgres.py` có một dòng **comment ví dụ** dạng:
+  `# postgresql://postgres.[ref]:[password]@...`
+  → CI Guard quét thấy chuỗi `postgresql://` trong `*.py` file → **kết luận sai** là đang hardcode credentials → Block deploy.
+* **Nguyên nhân gốc rễ:** Rule bảo mật trong `ci_guard.yml` chỉ kiểm tra sự xuất hiện của chuỗi ký tự, không phân biệt được đó là **code thật** hay **comment ví dụ**.
+* **Cách khắc phục:**
+    * Khi viết comment ví dụ về connection strings, URL, credentials: **KHÔNG được dùng đúng nguyên ký tự bị chặn** (ví dụ: `postgresql://`). Thay thế bằng chuỗi trung tính như `postgres-protocol://` hoặc `<db-url>`.
+    * Đây là quy tắc áp dụng cho **toàn bộ mọi loại comment, docstring, và string ví dụ** trong code.
+* **Rule bổ sung vào `monitor_agent.md`:** Checklist Code Review phải bổ sung mục kiểm tra pattern nhạy cảm trong cả comment, không chỉ trong code thực thi.
+
 *(File này sẽ liên tục được AI chủ động cập nhật nếu phát sinh thêm bất cứ sai sót nào trong quá trình xây dựng CryptoSentinel).*

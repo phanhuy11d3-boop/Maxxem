@@ -9,6 +9,8 @@
 - DB queries luôn dùng parameter binding (`%s`) để chống SQL Injection.
 - Gọi LLM và gửi Telegram LUÔN phải kẹp `time.sleep(2)` để chặn rate limit.
 - Parse JSON LLM phải có `try/except`. Lỗi thì gọi `increment_retry()`.
+- **[CI Guard]** Comment, docstring, và string ví dụ trong code **KHÔNG ĐƯỢC** chứa các pattern bị chặn (`postgresql://`, `gsk_`, ...). Dùng dạng trung tính như `<db-url>` hoặc `postgres-protocol://` thay thế — CI Guard không phân biệt code thật và comment.
+
 
 ## 2. 🟢 Kiến trúc (Architecture Rules)
 - **Storage:** Supabase PostgreSQL (Không dùng SQLite, bỏ hoàn toàn GitHub Artifacts).
