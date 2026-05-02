@@ -52,3 +52,9 @@ jobs:
       # ── Chất lượng code: validate models không bị vỡ ──────────────────────
       - name: "[Test] Validate Article model (Smoke Test)"
         run: python models/article.py
+
+      # ── Trọng tài Kiến trúc: Monitor Agent ────────────────────────────────
+      - name: "[Audit] Run Executable Monitor Agent"
+        run: python scripts/audit_agent.py
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
