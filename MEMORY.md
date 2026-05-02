@@ -51,4 +51,12 @@
     * Đây là quy tắc áp dụng cho **toàn bộ mọi loại comment, docstring, và string ví dụ** trong code.
 * **Rule bổ sung vào `monitor_agent.md`:** Checklist Code Review phải bổ sung mục kiểm tra pattern nhạy cảm trong cả comment, không chỉ trong code thực thi.
 
+## 7. Bài học về Model Decommissioning (Khai tử Model)
+* **Vấn đề phát hiện:** Hệ thống báo `LLM: 20 errors` mặc dù API Key đúng.
+* **Nguyên nhân cốt lõi:** Model `llama3-8b-8192` bị Groq khai tử. API trả về lỗi 400 nhưng hệ thống chỉ ghi nhận là "LLM Error", dẫn đến giả định sai là lỗi API Key.
+* **Cách khắc phục:** 
+    * Cập nhật sang model mới nhất (`llama-3.3-70b-versatile`).
+    * **Nguyên tắc kiến trúc:** Trong các hệ thống Agent, không nên phụ thuộc vào 1 model duy nhất. Nên có cơ chế cấu hình model qua biến môi trường hoặc có danh sách fallback.
+* **Rule bổ sung vào `monitor_agent.md`:** Khi AI lỗi hàng loạt với code 400, phải kiểm tra tính khả dụng của Model ID trước khi yêu cầu người dùng đổi API Key.
+
 *(File này sẽ liên tục được AI chủ động cập nhật nếu phát sinh thêm bất cứ sai sót nào trong quá trình xây dựng CryptoSentinel).*
