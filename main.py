@@ -16,7 +16,8 @@ import argparse
 
 from storage.postgres import init_db, upsert_article, get_unprocessed, mark_processed, increment_retry
 from scrapers.generic_rss import scrape_all_feeds
-from processors.insight_extractor import get_groq_client, analyze_article
+from processors.insight_extractor import get_groq_client, triage_articles, analyze_articles_batch
+from models.article import MarketImpact
 from utils.notifier import send_telegram, send_heartbeat
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -70,53 +71,86 @@ def run_legacy_pipeline():
     logger.info(f"4. Bắt đầu xử lý AI (Token FinOps Batch). Tổng cần: {len(unprocessed)}, Lấy ra: {len(batch)}")
 
     if batch:
+        ai_processed = 0
         groq_client = get_groq_client()
         if not groq_client:
             logger.error("Dừng phase AI vì không thể khởi tạo Groq client.")
-            llm_errors += 1
+            llm_errors += len(batch)
+            for article in batch:
+                increment_retry(article.id)
         else:
-            # 5. Tối ưu hóa: Tier 1 - Triage (Model 8B)
-            from processors.insight_extractor import triage_articles, analyze_articles_batch
-            
             logger.info(f"   -> Đang chạy Triage cho {len(batch)} bài báo...")
             triage_results = triage_articles(batch, groq_client)
-            
+            n_triage = min(len(triage_results), len(batch))
+            if len(triage_results) != len(batch):
+                logger.warning(
+                    "Độ dài triage (%s) ≠ batch (%s); dùng %s nhãn đầu + fallback high-impact.",
+                    len(triage_results),
+                    len(batch),
+                    n_triage,
+                )
+            triage_fallback = len(batch) - n_triage
+
             high_impact_batch = []
-            ai_processed = 0
-            
-            for i, is_high_impact in enumerate(triage_results):
+
+            for i in range(n_triage):
                 article = batch[i]
-                if is_high_impact:
+                if triage_results[i]:
                     high_impact_batch.append(article)
                 else:
-                    # Tin thấp: Mark processed trung lập ngay lập tức (Tiết kiệm Token 70B)
-                    mark_processed(article.id, 0.0, "neutral", "Routine news - skipped deep analysis.")
+                    mark_processed(
+                        article.id,
+                        0.0,
+                        MarketImpact.NEUTRAL,
+                        "Routine news - skipped deep analysis.",
+                    )
                     ai_processed += 1
-            
-            logger.info(f"   -> Triage xong: {len(high_impact_batch)} tin Quan trọng | {len(batch) - len(high_impact_batch)} tin Rác.")
 
-            # 6. Tối ưu hóa: Tier 2 - Batch Analysis (Model 70B)
+            for i in range(n_triage, len(batch)):
+                high_impact_batch.append(batch[i])
+            if triage_fallback:
+                logger.warning(
+                    "%s bài thiếu nhãn triage (độ dài response); coi như high-impact.",
+                    triage_fallback,
+                )
+
+            low_skip = sum(1 for i in range(n_triage) if not triage_results[i])
+            logger.info(
+                f"   -> Triage xong: {len(high_impact_batch)} tin cần phân tích sâu | "
+                f"{low_skip} low-impact đã đóng | "
+                f"{triage_fallback} bài fallback (thiếu nhãn triage)."
+            )
+
             if high_impact_batch:
                 success = analyze_articles_batch(high_impact_batch, groq_client)
-                if success:
+                if not success:
+                    llm_errors += len(high_impact_batch)
+                    logger.error("Batch analysis failed.")
                     for article in high_impact_batch:
-                        # Gửi Telegram cho tin quan trọng
+                        increment_retry(article.id)
+                else:
+                    for article in high_impact_batch:
+                        if not article.processed:
+                            llm_errors += 1
+                            increment_retry(article.id)
+                            logger.warning(
+                                "LLM thiếu kết quả cho id=%s..., tăng retry.",
+                                article.id[:12],
+                            )
+                            continue
                         sent = send_telegram(article)
                         if not sent and article.is_actionable:
                             tg_errors += 1
                             logger.warning(f"Telegram fail cho {article.id[:12]}.")
                         else:
-                            # Lưu kết quả phân tích vào DB (analyze_articles_batch đã set các trường trong RAM)
                             mark_processed(
                                 article_id=article.id,
                                 sentiment=article.sentiment,
-                                market_impact=article.market_impact,
-                                key_takeaway=article.key_takeaway
+                                market_impact=article.market_impact
+                                or MarketImpact.NEUTRAL,
+                                key_takeaway=article.key_takeaway,
                             )
                             ai_processed += 1
-                else:
-                    llm_errors += len(high_impact_batch)
-                    logger.error("Batch analysis failed.")
     else:
         ai_processed = 0
         logger.info("Không có bài báo nào cần xử lý.")
@@ -144,19 +178,22 @@ def run_legacy_pipeline():
 def main():
     parser = argparse.ArgumentParser(description="CryptoSentinel Orchestrator")
     parser.add_argument("--legacy", action="store_true", help="Chạy luồng tuyến tính cũ (v2.2)")
-    parser.add_argument("--agentic", action="store_true", help="Chạy luồng Multi-Agent mới (v3.0)")
+    parser.add_argument(
+        "--agentic",
+        action="store_true",
+        help="In chú thích multi-agent roadmap; pipeline runtime vẫn là luồng tuyến tính (xem README).",
+    )
     args = parser.parse_args()
 
     if args.agentic:
-        logger.info("=== Chế độ AGENTIC Run được kích hoạt ===")
-        print("\n[INFO] Hệ thống đang vận hành dưới sự điều phối của Orchestrator-Agent.")
-        print("[INFO] Các bước thực thi (Scout -> Analyst -> Auditor -> Broadcaster) được quản lý bởi AI.")
-        print("[INFO] Kiểm tra log của Agent để xem chi tiết quá trình suy luận.\n")
-        # Trong kiến trúc Multi-Agent, việc thực thi thực tế diễn ra thông qua việc Agent sử dụng Tools.
-        # Ở đây ta có thể gọi lại legacy pipeline như một tool cơ bản hoặc kết thúc để Agent tự làm.
-        run_legacy_pipeline() 
+        logger.info("=== Flag --agentic: pipeline Python không đổi; roadmap agent ngoài Cursor/Claude ===")
+        print(
+            "\n[INFO] CryptoSentinel trên máy chỉ chạy main.py luồng RSS→Postgres→Groq→Telegram.\n"
+            "[INFO] Scout/Analyst/Auditor/Broadcaster trong .claude/agents/ là playbook cho Cursor/Claude, "
+            "chưa được gọi tự động tại đây.\n"
+        )
+        run_legacy_pipeline()
     else:
-        # Mặc định chạy legacy nếu không có tham số hoặc chọn --legacy
         run_legacy_pipeline()
 
 if __name__ == "__main__":

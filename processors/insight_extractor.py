@@ -26,12 +26,14 @@ TRIAGE_PROMPT = """Act as a crypto news filter.
 Decide if each news title is 'high_impact' (market moving, hacks, major funding, regulatory) or 'low_impact' (routine, fluff, PR).
 Return JSON: {"results": [true, false, ...]} matching the input order."""
 
-SYSTEM_PROMPT_BATCH = """Act as a skeptical crypto analyst.
-For each article, provide:
-1. sentiment (-1.0 to 1.0)
-2. market_impact (bullish/bearish/neutral)
-3. key_takeaway (max 20 words, no hype, focus on data)
-Return JSON: {"results": [{"id": "...", "sentiment": 0.5, ...}, ...]}"""
+SYSTEM_PROMPT_BATCH = """You are CryptoSentinel: skeptical, data-driven. Use ONLY title/summary provided.
+Rules:
+- Do not infer numbers or facts absent from input. If insufficient → sentiment near 0, market_impact "neutral".
+- key_takeaway: max 20 words, dry tone; include at least one concrete number (%, $, count) copied from input when possible.
+  If input has none, state uncertainty without hype.
+- Forbidden in key_takeaway: revolutionary, game-changer, groundbreaking, massive, huge, moon, explode, skyrocket.
+For each article return id, sentiment (-1..1), market_impact (bullish|bearish|neutral), key_takeaway.
+JSON only: {"results": [{"id": "...", "sentiment": 0.0, "market_impact": "neutral", "key_takeaway": "..."}]}"""
 
 def get_groq_client() -> Optional[Groq]:
     api_key = os.environ.get("GROQ_API_KEY")
@@ -65,7 +67,10 @@ def analyze_articles_batch(articles: List[Article], client: Groq) -> bool:
     if not articles: return True
     
     # Chuẩn bị dữ liệu batch để gửi (giảm overhead token)
-    batch_input = [{"id": a.id, "title": a.title, "summary": a.summary[:500]} for a in articles]
+    batch_input = [
+        {"id": a.id, "title": a.title, "summary": (a.summary or "")[:500]}
+        for a in articles
+    ]
     
     try:
         # FinOps: Delay để tránh rate limit nếu cần, nhưng batch giúp giảm số lần gọi

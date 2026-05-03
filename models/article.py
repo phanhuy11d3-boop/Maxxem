@@ -5,13 +5,14 @@ Data Contract trung tâm của CryptoSentinel (v2 — Python Pipeline).
 
 Giải quyết 3 bài toán:
   1. Data Integrity    — Pydantic validate dữ liệu thô trước khi vào DB
-  2. Deduplication     — ID = SHA-256(URL), SQLite dùng để check trùng
+  2. Deduplication     — ID = SHA-256(URL), PostgreSQL dùng ON CONFLICT làm cổng trùng
   3. Structured Insight — sentiment + MarketImpact Enum (không raw string)
 
 Stack: Python 3.11+, pydantic >= 2.0
 """
 
 import hashlib
+import html
 import re
 from urllib.parse import urlparse, urlunparse
 from datetime import datetime, timezone
@@ -69,7 +70,7 @@ def normalize_market_impact(raw: str) -> MarketImpact:
 class Article(BaseModel):
     """
     Đơn vị dữ liệu duy nhất trong pipeline CryptoSentinel.
-    Mọi dữ liệu từ Scraper → SQLite → LLM → Telegram đều là Article.
+    Mọi dữ liệu từ Scraper → PostgreSQL → LLM → Telegram đều là Article.
 
     Luồng điền dữ liệu:
         Scraper   → url, title, source, published_at, summary
@@ -208,6 +209,36 @@ class Article(BaseModel):
         lines.append("")
         lines.append("⚠️ AI-generated insight. Verify data before trading.")
 
+        return "\n".join(lines)
+
+    def format_telegram_html(self) -> str:
+        """
+        Định dạng gửi Telegram với ``parse_mode: HTML``.
+        Escape toàn bộ tiêu đề / takeaway / URL để không bị RSS phá markup (Markdown legacy dễ vỡ vì ``_``, ``*``).
+        """
+        impact_emoji = "📈" if self.market_impact == MarketImpact.BULLISH else "📉"
+        label = html.escape(self.market_impact.value.upper() if self.market_impact else "N/A")
+        source_esc = html.escape(self.source.strip())
+        title_esc = html.escape(self.title)
+        sentiment_str = (
+            html.escape(f"{self.sentiment:+.2f}")
+            if self.sentiment is not None
+            else "N/A"
+        )
+
+        lines = [
+            f"{impact_emoji} <b>{label}</b> | {source_esc}",
+            "",
+            title_esc,
+            "",
+            f"Sentiment: {sentiment_str}",
+        ]
+        if self.key_takeaway:
+            kt = html.escape(self.key_takeaway)
+            lines.append(f'Key: <i>"{kt}"</i>')
+        href = html.escape(str(self.url))
+        lines.extend(["", f'<a href="{href}">Source link</a>', ""])
+        lines.append(html.escape("⚠️ AI-generated insight. Verify data before trading."))
         return "\n".join(lines)
 
 

@@ -6,6 +6,7 @@ Chịu trách nhiệm gửi tín hiệu (Bullish/Bearish) tới Telegram.
 """
 
 import os
+import html
 import time
 import logging
 import requests
@@ -16,13 +17,23 @@ from models.article import Article
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-def _post_to_telegram(token: str, chat_id: str, text: str) -> bool:
+def _post_to_telegram(
+    token: str,
+    chat_id: str,
+    text: str,
+    *,
+    parse_mode: Optional[str] = None,
+) -> bool:
     """
     Helper nội bộ: gửi một message tới Telegram API.
-    Trả về True nếu thành công.
+    ``parse_mode`` dùng chuẩn Bot API (vd. ``HTML``, ``Markdown``). Để trống → văn bản thuần.
+
+    Prefer ``HTML`` + ``html.escape`` cho nội dung có tiêu đề RSS — Markdown legacy dễ vỡ vì ``_*[]()``.
     """
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = {"chat_id": chat_id, "text": text, "disable_web_page_preview": True}
+    payload: dict = {"chat_id": chat_id, "text": text, "disable_web_page_preview": True}
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
     try:
         response = requests.post(url, json=payload, timeout=15)
         response.raise_for_status()
@@ -51,12 +62,12 @@ def send_telegram(article: Article) -> bool:
         logger.error("CHƯA CẤU HÌNH BOT_TOKEN HOẶC CHAT_ID. Không thể gửi tin nhắn.")
         return False
 
-    message_text = article.format_telegram()
+    message_text = article.format_telegram_html()
 
     # FinOps Rate Limit: Ngăn chặn Telegram chặn bot nếu gửi quá nhanh
     time.sleep(2)
 
-    success = _post_to_telegram(token, chat_id, message_text)
+    success = _post_to_telegram(token, chat_id, message_text, parse_mode="HTML")
     if success:
         logger.info(f"✅ Đã gửi Telegram thành công: {article.title[:40]}...")
     return success
@@ -82,16 +93,17 @@ def send_heartbeat(scraped: int, new: int, ai_processed: int,
 
     total_errors = db_errors + llm_errors + tg_errors
     status = "✅ OK" if total_errors == 0 else f"⚠️ {total_errors} errors"
+    safe_status = html.escape(status)
 
     text = (
-        f"📊 *CryptoSentinel Heartbeat* | {status}\n"
+        f"<b>📊 CryptoSentinel Heartbeat</b> | {safe_status}\n"
         f"├ Scraped: {scraped} bài | Mới: {new}\n"
         f"├ AI processed: {ai_processed}\n"
         f"├ Errors — DB: {db_errors} | LLM: {llm_errors} | TG: {tg_errors}\n"
         f"└ Duration: {duration_s:.1f}s"
     )
 
-    success = _post_to_telegram(token, chat_id, text)
+    success = _post_to_telegram(token, chat_id, text, parse_mode="HTML")
     if success:
         logger.info("✅ Heartbeat gửi thành công.")
     return success

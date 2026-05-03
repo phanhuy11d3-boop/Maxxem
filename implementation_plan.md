@@ -21,13 +21,13 @@ GitHub Actions (cron: mỗi 1h)
         │   models/article.py         [Validate + Dedup ID]
         │         │
         │         ▼
-        ├─► storage/sqlite.py         [Lưu DB, check trùng]
+        ├─► storage/postgres.py       [Lưu DB, check trùng]
         │         │ (chỉ tin mới)
         │         ▼
         ├─► processors/insight_extractor.py  [Groq LLM phân tích]
         │         │
         │         ▼
-        ├─► storage/sqlite.py         [Cập nhật insight vào DB]
+        ├─► storage/postgres.py       [Cập nhật insight vào DB]
         │         │ (chỉ bullish/bearish)
         │         ▼
         └─► utils/notifier.py         [Gửi Telegram]
@@ -67,7 +67,7 @@ Database: Supabase PostgreSQL (hosted, free tier, không cần persist qua Artif
 
 ---
 
-## Phase 2 — Storage Engine (storage/sqlite.py → Supabase PostgreSQL)
+## Phase 2 — Storage Engine (storage/postgres.py — Supabase PostgreSQL)
 
 **Triết lý cốt lõi của Database:**
 1. **FinOps (Token Management):** Ngăn hệ thống gọi AI vô ích cho các tin cũ/trùng lặp -> "Cái phanh" đốt tiền.
@@ -75,28 +75,28 @@ Database: Supabase PostgreSQL (hosted, free tier, không cần persist qua Artif
 3. **Structured Analytics:** Biến text RSS thô thành "Tài sản dữ liệu" có cấu trúc (Sentiment, Impact) để truy vấn trend sau này.
 4. **Retry Cap:** `retry_count` giới hạn AI retry ở 3 lần/bài, tránh đốt rate limit khi Groq outage.
 
-**Schema bảng `articles`:**
+**Schema bảng `articles` (runtime thực tế trong `postgres.py`):**
 ```sql
 CREATE TABLE IF NOT EXISTS articles (
-    id TEXT PRIMARY KEY,           -- SHA-256(url)
+    id TEXT PRIMARY KEY,           -- SHA-256(sanitized url)
     title TEXT NOT NULL,
     url TEXT NOT NULL,
     source TEXT NOT NULL,
-    published_at TEXT NOT NULL,    -- ISO 8601 UTC
+    published_at TIMESTAMPTZ NOT NULL,
     summary TEXT,
     sentiment REAL,
     market_impact TEXT,
     key_takeaway TEXT,
-    scraped_at TEXT NOT NULL,
-    processed INTEGER DEFAULT 0,   -- 0=False, 1=True
+    scraped_at TIMESTAMPTZ NOT NULL,
+    processed BOOLEAN DEFAULT FALSE,
     retry_count INTEGER DEFAULT 0  -- Cap ở 3, tránh đốt rate limit
 );
 ```
 
 **Hàm cốt lõi:**
 - `init_db()` → tạo bảng nếu chưa có
-- `upsert_article(article) -> bool` → True nếu là tin mới, False nếu trùng (ON CONFLICT DO NOTHING)
-- `get_unprocessed() -> List[Article]` → lấy bài có `processed=0 AND retry_count < 3`
+- `upsert_article(article) -> Optional[bool]` → True nếu là tin mới, False nếu trùng, None nếu lỗi DB (`ON CONFLICT DO NOTHING`)
+- `get_unprocessed() -> List[Article]` → lấy bài có `processed = FALSE AND retry_count < 3`
 - `mark_processed(id, sentiment, market_impact, key_takeaway)` → cập nhật sau LLM
 - `increment_retry(id)` → tăng retry_count khi AI fail, cap ở 3 lần
 
@@ -127,26 +127,9 @@ CREATE TABLE IF NOT EXISTS articles (
 
 **Mục tiêu:** Biến tin thô thành tín hiệu có giá trị.
 
-**API:** Groq API, model `llama3-8b-8192` (primary), `llama3-70b-8192` (fallback)
+**API:** Groq API — triage `llama-3.1-8b-instant` (`TRIAGE_PROMPT`), phân tích sâu batch `llama-3.3-70b-versatile` (`SYSTEM_PROMPT_BATCH`).
 
-**System Prompt:**
-```
-You are CryptoSentinel, a hyper-specialized autonomous crypto analyst.
-Your persona:
-- Skeptical, data-driven, and technical.
-- Ignore social media noise and marketing hype.
-- Do not recognize 'revolutionary' or 'game-changing' as valid descriptors.
-- Focus on liquidity flows and verifiable unit economics.
-- Tone: Cold, precise, and concise. Never friendly or polite.
-
-Analyze the following news title and summary. Return ONLY a valid JSON object:
-{
-  "sentiment": <float from -1.0 to 1.0>,
-  "market_impact": <"bullish" | "bearish" | "neutral">,
-  "key_takeaway": <max 20 words, must be a skeptical, evidence-based insight, no hype>
-}
-Do not include any explanation or markdown.
-```
+**Prompt:** Nguồn sự thật là hằng `TRIAGE_PROMPT` và `SYSTEM_PROMPT_BATCH` trong `processors/insight_extractor.py`, phải giữ đồng bộ với `docs/guardrails.md`. Đầu ra batch: một object JSON chứa mảng `results` các phần tử `{ id, sentiment, market_impact, key_takeaway }`.
 
 **JSON Parse Strategy:**
 1. Dùng Groq JSON mode nếu có (`response_format={"type": "json_object"}`)
@@ -154,7 +137,7 @@ Do not include any explanation or markdown.
 3. Normalize `market_impact`: `.lower().strip()`, nếu không match → "neutral"
 4. Nếu parse fail hoàn toàn → log warning, `processed` vẫn là `False` để retry sau
 
-**Rate Limiting:** `time.sleep(2)` sau mỗi API call
+**Rate Limiting:** `time.sleep(1)` trước gọi batch 70B; `time.sleep(2)` trong `send_telegram` giữa các tin Telegram.
 
 ---
 
@@ -186,27 +169,21 @@ Source: https://...
 
 ## Phase 6 — Orchestration (main.py + scraper.yml)
 
-### main.py — Luồng tuyến tính:
+### main.py — Luồng tuyến tính (v2.2+, triage + batch):
 ```python
-MAX_BATCH_SIZE = 20  # Giới hạn số bài xử lý AI mỗi lần chạy
+MAX_BATCH_SIZE = 20
 
 1. init_db()
-2. articles = scrape_all_feeds()          # Phase 3
-3. new_count = 0
-   for article in articles:
-       is_new = upsert_article(article)   # Phase 2
-       if is_new: new_count += 1
-4. unprocessed = get_unprocessed()[:MAX_BATCH_SIZE]  # Phase 2 + batch limit
-5. for article in unprocessed:
-       success = analyze_article(article) # Phase 4
-       if success:
-           mark_processed(article.id, ...)        
-           if article.market_impact != NEUTRAL:
-               send_telegram(article)     # Phase 5
-               sleep(2)
-       else:
-           increment_retry(article.id)    # Tăng retry, cap ở 3 lần
-6. log(f"Done. New: {new_count}, Processed: {len(unprocessed)}")
+2. articles = scrape_all_feeds()
+3. Cho mỗi article: upsert_article(...)  # tin mới → True (rowcount); lỗi DB → đếm db_errors
+4. batch = get_unprocessed()[:MAX_BATCH_SIZE]
+5. Nếu batch rỗng → xong heartbeat
+6. Groq client lỗi → increment_retry từng bài trong batch
+7. Triage 8B → low-impact: mark_processed(..., neutral, ...); high-impact vào cụm batch
+8. analyze_articles_batch (70B) — fail toàn cụm → increment_retry cho từng bài high-impact
+9. Theo từng bài analyzed: LLM thiếu key trong JSON → increment_retry; không gửi TG nếu actionable fail TG
+10. mark_processed sau khi gửi Telegram OK hoặc bài neutral (logic chi tiết xem main.py)
+11. send_heartbeat(...)
 ```
 
 ### .github/workflows/scraper.yml:
@@ -259,7 +236,7 @@ jobs:
 | File | Vai trò |
 |---|---|
 | `models/article.py` | Data Contract — Pydantic validation |
-| `storage/sqlite.py` | Storage Engine — upsert + dedup |
+| `storage/postgres.py` | Storage Engine — pool + upsert + dedup |
 | `scrapers/generic_rss.py` | RSS Ingestion |
 | `processors/insight_extractor.py` | Groq LLM analysis |
 | `utils/notifier.py` | Telegram delivery |

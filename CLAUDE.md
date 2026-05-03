@@ -1,15 +1,21 @@
-# CryptoSentinel — The Multi-Agent Constitution (v3.0)
+# CryptoSentinel — The AI Operating System (v4.0)
 
 > [!IMPORTANT]
-> Dự án đã chuyển sang kiến trúc **Multi-Agent Orchestration**. Mọi thay đổi code phải tuân thủ "Hợp đồng công cụ" (Tool Schema) và không được phá vỡ tính cô lập (Isolation) của các Agent.
+> Hệ thống đã nâng cấp thành **AIOS**. Mọi hoạt động được điều phối bởi Agents thông qua các **Skills** chuyên biệt. Code Python đóng vai trò là công cụ thực thi (Tools/Connections).
 
-## 📍 Nguyên tắc vận hành (Agentic Rules)
-1. **Tool-Centric**: Code Python (`main.py`) đóng vai trò là "Công cụ thực thi". Orchestrator-Agent là người điều khiển.
-2. **JSON Protocol**: Mọi giao tiếp giữa các Agent và Tools phải thông qua JSON có cấu trúc.
-3. **Multi-Agent Flow**: Scout (Cào tin) -> Analyst (Phân tích/The Block Style) -> Auditor (Kiểm định) -> Broadcaster (Telegram).
+## 📍 Kiến trúc AIOS (4 Pillars)
+1. **Context**: `.claude/agents/` (Brains) & `.claude/skills/` (Expertise).
+2. **Connections**: `scrapers/`, `storage/`, `utils/` (Python Tools).
+3. **Capabilities**: Tập hợp các Skills định nghĩa quy trình chuẩn (SOPs).
+4. **Cadence**: GitHub Actions & `storage/state.json` (Vòng lặp tự động).
 
-## 📍 Lệnh phát triển (Build & Test)
-- **Install**: `pip install -r requirements.txt`
+## 📍 Lệnh vận hành (OS Commands)
+- **Legacy Run**: `python main.py --legacy` (Pipeline tuyến tính v2.2)
+- **Agentic Shell**: `python main.py --agentic` (Shell cho Agent tương tác)
 - **Unit Tests**: `pytest tests/unit`
-- **Legacy Run**: `python main.py --legacy` (Luồng tuyến tính v2.2)
-- **Agentic Run**: `python main.py --agentic` (Luồng có sự giám sát của Orchestrator v3.0)
+- **System Audit**: `python scripts/audit_agent.py`
+
+## 📍 Cấu trúc thư mục AIOS
+- `.claude/agents/`: Định nghĩa cá tính và quyền hạn của các Agent.
+- `.claude/skills/`: Chứa các bộ kỹ năng (SOPs) chi tiết.
+- `storage/state.json`: Lưu trữ trạng thái hệ thống và bộ nhớ ngắn hạn.

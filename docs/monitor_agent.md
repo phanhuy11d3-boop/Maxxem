@@ -13,7 +13,7 @@
 
 
 ## 2. 🟢 Kiến trúc (Architecture Rules)
-- **Storage:** Supabase PostgreSQL (Không dùng SQLite, bỏ hoàn toàn GitHub Artifacts).
+- **Storage:** Supabase PostgreSQL chỉ qua [`storage/postgres.py`](../storage/postgres.py); `DATABASE_URL` bắt buộc. Không dùng DB file cục bộ trong pipeline; bỏ GitHub Artifacts cho state tin tức.
 - **LLM:** Groq Llama 3 (`temperature=0.0`, ép JSON mode).
 - **Orchestration:** Đúng 1 file `main.py` làm nhạc trưởng. Tự động hoá qua GitHub Actions cronjob.
 - **Tính Module:** 1 file = 1 chức năng duy nhất (Single Responsibility).
@@ -25,14 +25,14 @@
 - [ ] Các tin nhắn Telegram đều đính kèm dòng cảnh báo AI Disclaimer.
 
 ## 4. 🔵 DB Layer Rules (Bắt buộc — thêm sau khi phát hiện gap)
-- Storage engine file LUÔN được đặt tên theo backend thực tế (đang dùng PostgreSQL → file phải là `postgres.py`, không phải `sqlite.py`).
+- Module storage LUÔN phản ánh đúng backend đang chạy: hiện tại bắt buộc `storage/postgres.py` — không được giữ hoặc thêm module `storage/` trùng tên / trùng nhiệm vụ với engine khác.
 - Column types LUÔN dùng PostgreSQL native: `TIMESTAMPTZ` (không phải `TEXT`), `BOOLEAN` (không phải `INTEGER`).
-- **Kết nối Database PHẢI dùng `psycopg2.pool.SimpleConnectionPool`** — tuyệt đối không được mở/đóng TCP connection mỗi lần gọi hàm (anti-pattern của SQLite local).
+- **Kết nối Database PHẢI dùng `psycopg2.pool.SimpleConnectionPool`** — tuyệt đối không mở/đóng kết nối TCP Postgres mới cho từng thao tác (tốn chi phí, dễ vượt limit cloud).
 - Mọi hàm thao tác DB ĐỀU phải có `try/except psycopg2.OperationalError` kèm `conn.rollback()` và `putconn()` trong `finally`.
 - Không được làm crash `main.py` chỉ vì một thao tác DB lẻ (upsert, mark, retry) thất bại — log lỗi và tiếp tục.
 
 ## 5. 🟠 Infrastructure Migration Rules
-- Khi nâng cấp infrastructure (ví dụ: local → cloud, SQLite → PostgreSQL), **BẮt BUỘC audit lại toàn bộ** các design pattern liên quan — không được copy-paste nguyên xi code cũ.
+- Khi nâng cấp infrastructure (ví dụ: Postgres self-host → managed cloud), **BẮT BUỘC audit lại toàn bộ** các design pattern liên quan — không được copy-paste nguyên xi code hoặc tên module lỗi thời.
 - Checklist migration tối thiểu:
     - [ ] File name và module name phản ánh đúng backend mới.
     - [ ] Data types được chuyển sang native type của backend mới.

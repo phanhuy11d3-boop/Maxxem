@@ -1,0 +1,13 @@
+{
+  "last_run": null,
+  "current_phase": "idle",
+  "active_agents": [],
+  "processed_ids_in_current_session": [],
+  "errors": {
+    "db": 0,
+    "llm": 0,
+    "telegram": 0
+  },
+  "cadence": "hourly",
+  "system_status": "healthy"
+}

@@ -123,11 +123,11 @@ def init_db():
         _get_pool().putconn(conn)
 
 
-def upsert_article(article: Article) -> bool:
+def upsert_article(article: Article) -> Optional[bool]:
     """
     Deduplication Gateway:
     Cố gắng chèn bài báo vào DB. Nếu ID (SHA-256 URL) đã tồn tại → Bỏ qua.
-    Trả về True nếu tin mới, False nếu tin trùng hoặc lỗi.
+    Trả về True nếu tin mới, False nếu tin trùng, None nếu lỗi kết nối DB.
     """
     conn = _get_pool().getconn()
     try:
@@ -152,7 +152,7 @@ def upsert_article(article: Article) -> bool:
     except OperationalError as e:
         conn.rollback()
         logger.error(f"Lỗi kết nối khi upsert_article (ID: {article.id}): {e}")
-        return False
+        return None
     finally:
         _get_pool().putconn(conn)
 

@@ -1,7 +1,8 @@
 # Guardrails: Operational Constraints (v2 — Python Pipeline)
 
-> Các quy tắc này được áp dụng trong **System Prompt** của `processors/insight_extractor.py`
-> và trong logic lọc của `utils/notifier.py`. Không liên quan đến ElizaOS hay Twitter API.
+> Các quy tắc này được **enforce trong code** qua các hằng `TRIAGE_PROMPT` và `SYSTEM_PROMPT_BATCH`
+> trong [`processors/insight_extractor.py`](../processors/insight_extractor.py), cùng logic lọc trong
+> [`utils/notifier.py`](../utils/notifier.py). Không liên quan đến ElizaOS hay Twitter API.
 
 ---
 
@@ -50,7 +51,7 @@ Không có ngoại lệ. Dữ liệu bẩn không được phép đi sâu vào p
 
 ## 5. Deduplication (Chống trùng lặp)
 
-**Áp dụng tại:** `storage/sqlite.py`
+**Áp dụng tại:** `storage/postgres.py` (PostgreSQL Supabase duy nhất — dedup không qua DB file cục bộ.)
 
-Mỗi bài báo có ID = SHA-256(URL). SQLite dùng `INSERT OR IGNORE` theo PRIMARY KEY.
+Mỗi bài báo có ID = SHA-256(URL). `ON CONFLICT (id) DO NOTHING`.
 Cùng 1 bài từ nhiều nguồn → chỉ lưu 1 lần. LLM không bao giờ xử lý lại bài đã có.

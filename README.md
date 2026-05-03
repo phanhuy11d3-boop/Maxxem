@@ -8,7 +8,7 @@ Hệ thống tin tức Crypto tự trị — thu thập, phân tích và phân p
 |---|---|
 | Ngôn ngữ | Python 3.11+ |
 | LLM | Groq API (Llama 3 8B/70B) |
-| Database | Supabase (PostgreSQL hosted) |
+| Database | Supabase (PostgreSQL hosted) — chỉ [`storage/postgres.py`](storage/postgres.py); runtime không dùng engine DB cục bộ/file |
 | Scheduler | GitHub Actions (cron: 1h) |
 | Output | Telegram Bot |
 | Scraping | feedparser (RSS) |
@@ -20,7 +20,7 @@ GitHub Actions (1h)
   → main.py
     → scrapers/generic_rss.py   (Lấy tin từ RSS)
     → models/article.py         (Pydantic validate + Sanitize URL)
-    → storage/sqlite.py         (Lưu Supabase + Dedup + Retry Cap)
+    → storage/postgres.py       (Lưu Supabase + Dedup + Retry Cap)
     → processors/insight_extractor.py  (Groq phân tích - Persona: CryptoSentinel)
     → utils/notifier.py         (Telegram - Chỉ gửi Bullish/Bearish)
 ```
@@ -33,7 +33,7 @@ crypto-sentinel/
 ├── models/article.py           # Định nghĩa dữ liệu (Data Contract)
 ├── scrapers/generic_rss.py     # Cào tin từ RSS
 ├── processors/insight_extractor.py # AI Engine (Groq Llama 3)
-├── storage/sqlite.py           # Database Engine (Supabase)
+├── storage/postgres.py         # Database Engine (Supabase / psycopg2 pool)
 ├── utils/notifier.py           # Gửi tin Telegram
 ├── config/sources.yaml         # Danh sách nguồn RSS
 ├── docs/
@@ -53,6 +53,12 @@ GROQ_API_KEY=   # Groq API key
 BOT_TOKEN=      # Telegram Bot token
 CHAT_ID=        # Telegram Chat/Channel ID
 ```
+
+## CLI
+
+- `python main.py` — pipeline mặc định (RSS → Postgres → Groq → Telegram).
+- `python main.py --legacy` — tương đương mặc định (luôn là luồng tuyến tính trên repo).
+- `python main.py --agentic` — chỉ in chú thích roadmap multi-agent trong `.claude/agents/`; **không đổi** pipeline Python.
 
 ## Tài liệu quan trọng
 
