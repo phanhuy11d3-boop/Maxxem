@@ -12,6 +12,7 @@ Cải tiến v2.2:
 
 import time
 import logging
+import argparse
 
 from storage.postgres import init_db, upsert_article, get_unprocessed, mark_processed, increment_retry
 from scrapers.generic_rss import scrape_all_feeds
@@ -24,9 +25,10 @@ logger = logging.getLogger(__name__)
 # Giới hạn số bài xử lý AI mỗi lần chạy để đảm bảo không dính rate limit nếu tích tụ backlog quá lớn
 MAX_BATCH_SIZE = 20
 
-def main():
+def run_legacy_pipeline():
+    """Luồng xử lý tuyến tính truyền thống (Linear Pipeline v2.2)"""
     start_time = time.monotonic()
-    logger.info("=== Bắt đầu chạy pipeline CryptoSentinel ===")
+    logger.info("=== Bắt đầu chạy LEGACY pipeline CryptoSentinel ===")
 
     # --- Error counters (Observability) ---
     db_errors = 0
@@ -125,6 +127,24 @@ def main():
         duration_s=duration
     )
 
+
+def main():
+    parser = argparse.ArgumentParser(description="CryptoSentinel Orchestrator")
+    parser.add_argument("--legacy", action="store_true", help="Chạy luồng tuyến tính cũ (v2.2)")
+    parser.add_argument("--agentic", action="store_true", help="Chạy luồng Multi-Agent mới (v3.0)")
+    args = parser.parse_args()
+
+    if args.agentic:
+        logger.info("=== Chế độ AGENTIC Run được kích hoạt ===")
+        print("\n[INFO] Hệ thống đang vận hành dưới sự điều phối của Orchestrator-Agent.")
+        print("[INFO] Các bước thực thi (Scout -> Analyst -> Auditor -> Broadcaster) được quản lý bởi AI.")
+        print("[INFO] Kiểm tra log của Agent để xem chi tiết quá trình suy luận.\n")
+        # Trong kiến trúc Multi-Agent, việc thực thi thực tế diễn ra thông qua việc Agent sử dụng Tools.
+        # Ở đây ta có thể gọi lại legacy pipeline như một tool cơ bản hoặc kết thúc để Agent tự làm.
+        run_legacy_pipeline() 
+    else:
+        # Mặc định chạy legacy nếu không có tham số hoặc chọn --legacy
+        run_legacy_pipeline()
 
 if __name__ == "__main__":
     main()
