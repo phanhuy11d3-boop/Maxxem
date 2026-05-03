@@ -67,43 +67,56 @@ def run_legacy_pipeline():
     # 4. Lấy danh sách cần phân tích AI
     unprocessed = get_unprocessed()
     batch = unprocessed[:MAX_BATCH_SIZE]
-    logger.info(f"4. Bắt đầu xử lý AI (FinOps Batch Limit). Tổng cần xử lý: {len(unprocessed)}, Lấy ra: {len(batch)}")
+    logger.info(f"4. Bắt đầu xử lý AI (Token FinOps Batch). Tổng cần: {len(unprocessed)}, Lấy ra: {len(batch)}")
 
     if batch:
         groq_client = get_groq_client()
         if not groq_client:
-            logger.error("Dừng phase AI vì không thể khởi tạo Groq client (thiếu API Key).")
+            logger.error("Dừng phase AI vì không thể khởi tạo Groq client.")
             llm_errors += 1
         else:
-            # 5. Phân tích & Gửi thông báo
+            # 5. Tối ưu hóa: Tier 1 - Triage (Model 8B)
+            from processors.insight_extractor import triage_articles, analyze_articles_batch
+            
+            logger.info(f"   -> Đang chạy Triage cho {len(batch)} bài báo...")
+            triage_results = triage_articles(batch, groq_client)
+            
+            high_impact_batch = []
             ai_processed = 0
-            for article in batch:
-                success = analyze_article(article, groq_client)
-                if success:
-                    # Chuyển trạng thái RAM thành True để is_actionable hoạt động đúng
-                    article.processed = True
-
-                    # Bước 1: Gửi Telegram TRƯỚC
-                    sent = send_telegram(article)
-
-                    if not sent and article.is_actionable:
-                        # Gửi thất bại: Đếm lỗi và KHÔNG LƯU DB để lần sau AI phân tích lại
-                        tg_errors += 1
-                        article.processed = False # Rollback trạng thái RAM
-                        logger.warning(f"Telegram từ chối bài {article.id[:12]}. Bỏ qua lưu DB để retry lần sau.")
-                    else:
-                        # Bước 2: Chỉ lưu DB khi gửi thành công (hoặc bài Neutral không cần gửi)
-                        mark_processed(
-                            article_id=article.id,
-                            sentiment=article.sentiment,
-                            market_impact=article.market_impact,
-                            key_takeaway=article.key_takeaway
-                        )
-                        ai_processed += 1
+            
+            for i, is_high_impact in enumerate(triage_results):
+                article = batch[i]
+                if is_high_impact:
+                    high_impact_batch.append(article)
                 else:
-                    logger.warning(f"Phân tích thất bại bài {article.id[:12]}... Tăng retry_count.")
-                    increment_retry(article.id)
-                    llm_errors += 1
+                    # Tin thấp: Mark processed trung lập ngay lập tức (Tiết kiệm Token 70B)
+                    mark_processed(article.id, 0.0, "neutral", "Routine news - skipped deep analysis.")
+                    ai_processed += 1
+            
+            logger.info(f"   -> Triage xong: {len(high_impact_batch)} tin Quan trọng | {len(batch) - len(high_impact_batch)} tin Rác.")
+
+            # 6. Tối ưu hóa: Tier 2 - Batch Analysis (Model 70B)
+            if high_impact_batch:
+                success = analyze_articles_batch(high_impact_batch, groq_client)
+                if success:
+                    for article in high_impact_batch:
+                        # Gửi Telegram cho tin quan trọng
+                        sent = send_telegram(article)
+                        if not sent and article.is_actionable:
+                            tg_errors += 1
+                            logger.warning(f"Telegram fail cho {article.id[:12]}.")
+                        else:
+                            # Lưu kết quả phân tích vào DB (analyze_articles_batch đã set các trường trong RAM)
+                            mark_processed(
+                                article_id=article.id,
+                                sentiment=article.sentiment,
+                                market_impact=article.market_impact,
+                                key_takeaway=article.key_takeaway
+                            )
+                            ai_processed += 1
+                else:
+                    llm_errors += len(high_impact_batch)
+                    logger.error("Batch analysis failed.")
     else:
         ai_processed = 0
         logger.info("Không có bài báo nào cần xử lý.")

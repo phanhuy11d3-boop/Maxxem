@@ -1,139 +1,108 @@
 """
 processors/insight_extractor.py
 ===============================
-Mô-đun tương tác với Groq API (Llama 3) để phân tích bài báo.
-Biến text thô thành tín hiệu có cấu trúc (sentiment, impact, takeaway).
+Mô-đun tương tác với Groq API.
+Tối ưu hóa Token FinOps: Tiered LLM (8B -> 70B) & Batch Processing.
 """
 
 import os
 import json
 import time
 import logging
-import re
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 from groq import Groq
-
 from models.article import Article, normalize_market_impact
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """You are CryptoSentinel, a hyper-specialized autonomous crypto analyst.
-Your persona:
-- Skeptical, data-driven, and technical.
-- Ignore social media noise and marketing hype.
-- Do not recognize 'revolutionary' or 'game-changing' as valid descriptors.
-- Focus on liquidity flows and verifiable unit economics.
-- Tone: Cold, precise, and concise. Never friendly or polite.
+# --- CONFIG ---
+FAST_MODEL = "llama-3.1-8b-instant"
+POWER_MODEL = "llama-3.3-70b-versatile"
 
-Analyze the following news title and summary. Return ONLY a valid JSON object with exactly these fields:
-{
-  "sentiment": <float from -1.0 to 1.0>,
-  "market_impact": <"bullish" | "bearish" | "neutral">,
-  "key_takeaway": <max 20 words, must be a skeptical, evidence-based insight, no hype words>
-}
-Do not include any explanation, markdown, or text outside the JSON object."""
+# --- PROMPTS (Optimized for tokens) ---
+TRIAGE_PROMPT = """Act as a crypto news filter. 
+Decide if each news title is 'high_impact' (market moving, hacks, major funding, regulatory) or 'low_impact' (routine, fluff, PR).
+Return JSON: {"results": [true, false, ...]} matching the input order."""
+
+SYSTEM_PROMPT_BATCH = """Act as a skeptical crypto analyst.
+For each article, provide:
+1. sentiment (-1.0 to 1.0)
+2. market_impact (bullish/bearish/neutral)
+3. key_takeaway (max 20 words, no hype, focus on data)
+Return JSON: {"results": [{"id": "...", "sentiment": 0.5, ...}, ...]}"""
 
 def get_groq_client() -> Optional[Groq]:
     api_key = os.environ.get("GROQ_API_KEY")
     if not api_key:
-        logger.error("Chưa cấu hình GROQ_API_KEY trong environment variables.")
+        logger.error("Chưa cấu hình GROQ_API_KEY.")
         return None
     return Groq(api_key=api_key)
 
-def extract_json_from_text(text: str) -> Optional[Dict[str, Any]]:
-    """Cố gắng bóc tách JSON object từ text trả về của LLM."""
+def triage_articles(articles: List[Article], client: Groq) -> List[bool]:
+    """Tier 1: Dùng model 8B siêu rẻ để lọc tin rác theo Batch."""
+    if not articles: return []
+    
+    titles = [a.title for a in articles]
     try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
-        
-    match = re.search(r'\{.*\}', text, re.DOTALL)
-    if match:
-        try:
-            return json.loads(match.group(0))
-        except json.JSONDecodeError:
-            pass
-            
-    return None
+        response = client.chat.completions.create(
+            messages=[
+                {"role": "system", "content": TRIAGE_PROMPT},
+                {"role": "user", "content": json.dumps(titles)}
+            ],
+            model=FAST_MODEL,
+            response_format={"type": "json_object"}
+        )
+        data = json.loads(response.choices[0].message.content)
+        return data.get("results", [True] * len(articles))
+    except Exception as e:
+        logger.error(f"Triage error: {e}")
+        return [True] * len(articles) # Fallback: cho qua hết nếu lỗi
 
-def analyze_article(article: Article, client: Groq, model: str = "llama-3.3-70b-versatile") -> bool:
-    """
-    Gọi Groq API để phân tích Article. 
-    Nếu thành công, update trực tiếp vào object Article.
-    Trả về True nếu thành công, False nếu thất bại.
-    """
-    user_content = f"Title: {article.title}\nSummary: {article.summary or 'No summary'}"
+def analyze_articles_batch(articles: List[Article], client: Groq) -> bool:
+    """Tier 2: Dùng model 70B xử lý Batch các tin quan trọng đã qua lọc."""
+    if not articles: return True
+    
+    # Chuẩn bị dữ liệu batch để gửi (giảm overhead token)
+    batch_input = [{"id": a.id, "title": a.title, "summary": a.summary[:500]} for a in articles]
     
     try:
-        # Rate limit: Chặn spam API, giới hạn 2 giây / call theo FinOps plan
-        time.sleep(2)
+        # FinOps: Delay để tránh rate limit nếu cần, nhưng batch giúp giảm số lần gọi
+        time.sleep(1)
         
         response = client.chat.completions.create(
             messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_content}
+                {"role": "system", "content": SYSTEM_PROMPT_BATCH},
+                {"role": "user", "content": json.dumps(batch_input)}
             ],
-            model=model,
-            temperature=0.0, # Giảm độ "ngáo/sáng tạo", bắt buộc phải phân tích chính xác, khô khan
+            model=POWER_MODEL,
+            temperature=0.0,
             response_format={"type": "json_object"}
         )
         
-        raw_output = response.choices[0].message.content
-        if not raw_output:
-            logger.warning(f"Groq API trả về rỗng cho ID {article.id}")
-            return False
-            
-        data = extract_json_from_text(raw_output)
-        if not data:
-            logger.warning(f"Không thể parse JSON từ Groq cho ID {article.id}. Raw: {raw_output}")
-            return False
-            
-        # Update AI insights thẳng vào object Article
-        # Tự động catch lỗi nếu LLM văng ra format rác (vd: "bearish trend") nhờ hàm normalize_market_impact
-        article.sentiment = float(data.get("sentiment", 0.0))
-        article.market_impact = normalize_market_impact(data.get("market_impact", "neutral"))
-        article.key_takeaway = str(data.get("key_takeaway", ""))[:300]
+        raw_data = json.loads(response.choices[0].message.content)
+        results = raw_data.get("results", [])
         
+        # Map kết quả lại vào object Article
+        result_map = {res["id"]: res for res in results if "id" in res}
+        
+        for article in articles:
+            if article.id in result_map:
+                res = result_map[article.id]
+                article.sentiment = float(res.get("sentiment", 0.0))
+                article.market_impact = normalize_market_impact(res.get("market_impact", "neutral"))
+                article.key_takeaway = str(res.get("key_takeaway", ""))[:300]
+                article.processed = True
+            else:
+                logger.warning(f"Batch response missing ID: {article.id}")
+                
         return True
-        
     except Exception as e:
-        logger.error(f"Lỗi khi gọi Groq API cho ID {article.id}: {e}")
+        logger.error(f"Batch analysis error: {e}")
         return False
 
-# ===========================================================================
-# Smoke Test — chạy: python processors/insight_extractor.py
-# ===========================================================================
-if __name__ == "__main__":
-    from datetime import datetime, timezone
-    import sys
-    
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")
-        
-    print("=" * 60)
-    print("TEST: Chạy Insight Extractor (Yêu cầu có GROQ_API_KEY)")
-    
-    client = get_groq_client()
-    if client:
-        test_article = Article(
-            url="https://test.com",
-            title="Bitcoin ETFs See Record $1 Billion Inflow in Single Day",
-            source="Test",
-            published_at=datetime.now(timezone.utc),
-            summary="Institutional adoption accelerates as spot Bitcoin ETFs log their highest single-day inflows since launch, pushing BTC past $70k."
-        )
-        
-        print(f"Đang phân tích: {test_article.title}")
-        success = analyze_article(test_article, client)
-        
-        if success:
-            print("\nKết quả AI Insights:")
-            print(f"  Sentiment    : {test_article.sentiment}")
-            print(f"  Market Impact: {test_article.market_impact.value.upper()}")
-            print(f"  Key Takeaway : {test_article.key_takeaway}")
-        else:
-            print("Phân tích thất bại.")
-    else:
-        print("Bỏ qua test vì chưa có biến môi trường GROQ_API_KEY.")
+# Legacy support: keep original function but make it a wrapper or just leave it for small calls
+def analyze_article(article: Article, client: Groq) -> bool:
+    """Hỗ trợ luồng cũ bằng cách gọi batch size 1."""
+    return analyze_articles_batch([article], client)
