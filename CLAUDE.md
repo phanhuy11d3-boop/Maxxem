@@ -1,34 +1,29 @@
-# CryptoSentinel — Guide for AI Assistant (v2.1)
+# CryptoSentinel — The Multi-Agent Constitution (v3.0)
 
-> [!CAUTION]
-> **QUY TẮC BẢO MẬT TUYỆT ĐỐI:**
-> - **KHÔNG BAO GIỜ** hardcode API Key vào mã nguồn.
-> - **KHÔNG BAO GIỜ** commit `.env` hoặc file nhạy cảm lên Git.
-> - Đọc API Key từ biến môi trường (`os.environ`).
+> [!IMPORTANT]
+> Dự án đã chuyển sang kiến trúc **Multi-Agent Orchestration**. Mọi thay đổi code phải tuân thủ "Hợp đồng công cụ" (Tool Schema) và không được phá vỡ tính cô lập (Isolation) của các Agent.
 
-## 📍 Định hướng cốt lõi
-- **Stack:** Python 3.11+, Groq API (Llama 3), Supabase (PostgreSQL), GitHub Actions, Telegram.
-- **Triết lý:** Pipeline tuyến tính, serverless, cực kỳ tối giản (Lean).
-- **Tra cứu chi tiết:** `implementation_plan.md` (Kế hoạch), `docs/monitor_agent.md` (Checklist QA).
+## 📍 Nguyên tắc vận hành (Agentic Rules)
+1. **Tool-Centric**: Code Python là "Công cụ", không phải "Trình điều khiển". AI Agent là người điều khiển.
+2. **JSON Protocol**: Mọi giao tiếp giữa các Agent và Tools phải thông qua JSON có cấu trúc (Pydantic validated).
+3. **Progressive Disclosure**: Agent chỉ được cấp Context tối thiểu cần thiết để hoàn thành Task.
+4. **Human-in-the-loop**: Mọi thay đổi về hạ tầng hoặc config hệ thống phải được đề xuất qua Agent và được con người phê duyệt.
 
-## 📍 Hard Rules (Bắt buộc tuân thủ)
-1. **Dữ liệu:** Dùng `pydantic` để validate, `market_impact` bắt buộc là Enum.
-2. **Database:** Dùng `ON CONFLICT (id) DO NOTHING` trên ID (Sanitized URL hash) để chống trùng lặp.
-3. **FinOps:** Dùng `processed` (0/1) và `MAX_BATCH_SIZE=20` để kiểm soát chi phí API.
-4. **Rate Limit:** Luôn có `time.sleep(2)` khi gọi LLM hoặc Telegram.
-5. **Deduplication:** URL phải được sanitize (chặt query params) trước khi hash ID.
-6. **Log:** Dùng `logging` với format chuẩn, không dùng `print` bừa bãi.
+## 📍 Danh mục Agent (Specialists)
+- `/scout`: Tìm kiếm tin tức mới, lọc trùng lặp (Scout-Agent).
+- `/analyze`: Phân tích sâu nội dung, đánh giá tác động (Analyst-Agent).
+- `/audit`: Kiểm định chất lượng dựa trên Golden Dataset (Auditor-Agent).
+- `/broadcast`: Định dạng và gửi thông báo Telegram (Broadcaster-Agent).
+- `/run`: Chạy toàn bộ Workflow (Orchestrator).
 
-## 📂 Inventory (Trạng thái dự án)
-| File | Vai trò | Trạng thái |
-|---|---|---|
-| `models/article.py` | Data Contract + MarketImpact Enum | ✅ Done |
-| `storage/sqlite.py` | Supabase Engine (Retry count, Persistent) | ✅ Done |
-| `scrapers/generic_rss.py` | RSS Ingestion (feedparser) | ✅ Done |
-| `processors/insight_extractor.py` | Groq LLM (Persona: CryptoSentinel) | ✅ Done |
-| `utils/notifier.py` | Telegram Delivery (Disclaimer included) | ✅ Done |
-| `main.py` | Orchestrator tuyến tính | ✅ Done |
-| `config/sources.yaml` | RSS Feed URL list | ✅ Done |
-| `requirements.txt` | Python Dependencies | ✅ Done |
-| `.env.example` | Secrets template | ✅ Done |
-| `.github/workflows/scraper.yml` | GitHub Actions cron | ✅ Done |
+## 📍 Quy tắc tương tác & Xử lý xung đột
+- **Challenge Protocol**: Auditor-Agent có quyền bác bỏ kết quả của Analyst-Agent nếu độ lệch (variance) so với Golden Dataset > 20%.
+- **Rewind Logic**: Khi gặp lỗi Tool, Agent phải quay lại trạng thái (state) trước đó, log lỗi chi tiết và thử lại tối đa 2 lần trước khi báo cáo cho Orchestrator.
+- **Explanatory Style**: Orchestrator phải luôn giải thích lý do tại sao chọn Sub-agent hoặc Tool đó trong log thực thi.
+
+## 📍 Lệnh phát triển (Build & Test)
+- **Install**: `pip install -r requirements.txt`
+- **Unit Tests**: `pytest tests/unit`
+- **Integration**: `pytest tests/integration`
+- **Legacy Run**: `python main.py --legacy`
+- **Agentic Run**: `python main.py --agentic`
