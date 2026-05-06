@@ -240,23 +240,74 @@ def run_legacy_pipeline() -> None:
         _update_state(db_errors=db_errors, llm_errors=llm_errors, tg_errors=tg_errors)
 
 
+def run_agentic_with_legacy_fallback() -> None:
+    """
+    Luồng agentic opt-in, có fallback về legacy.
+
+    Không import agentic_runtime ở top-level để pipeline legacy mặc định không bị
+    ảnh hưởng nếu runtime agentic đang được chỉnh sửa hoặc thiếu dependency.
+    """
+    start_time = time.monotonic()
+    logger.info("=== Bắt đầu chạy Agentic Runtime opt-in ===")
+    try:
+        from agentic_runtime import run_agentic_pipeline
+
+        stats = run_agentic_pipeline(max_batch_size=MAX_BATCH_SIZE)
+        duration = time.monotonic() - start_time
+        logger.info(
+            "=== Agentic Hoàn Tất | Mới: %s | AI: %s | Lỗi DB/LLM/TG: %s/%s/%s | Cảnh báo: %s | %.1fs ===",
+            stats.new_count,
+            stats.ai_processed,
+            stats.db_errors,
+            stats.llm_errors,
+            stats.tg_errors,
+            stats.warnings,
+            duration,
+        )
+        send_heartbeat(
+            scraped=stats.scraped_count,
+            new=stats.new_count,
+            ai_processed=stats.ai_processed,
+            db_errors=stats.db_errors,
+            llm_errors=stats.llm_errors,
+            tg_errors=stats.tg_errors,
+            duration_s=duration,
+        )
+        _update_state(
+            db_errors=stats.db_errors,
+            llm_errors=stats.llm_errors,
+            tg_errors=stats.tg_errors,
+        )
+    except Exception as e:
+        logger.critical(
+            "Agentic pipeline lỗi nghiêm trọng: %s | Fallback về legacy pipeline để đảm bảo cadence.",
+            e,
+            exc_info=True,
+        )
+        run_legacy_pipeline()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="CryptoSentinel Orchestrator")
-    parser.add_argument("--legacy", action="store_true", help="Chạy luồng tuyến tính (v2.3)")
-    parser.add_argument(
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--legacy",
+        action="store_true",
+        help="Run the stable linear pipeline. This is also the default.",
+    )
+    mode.add_argument(
         "--agentic",
         action="store_true",
-        help="In chú thích multi-agent roadmap; pipeline runtime vẫn là luồng tuyến tính.",
+        help="Run the guarded agentic runtime with automatic legacy fallback.",
     )
     args = parser.parse_args()
 
     if args.agentic:
-        logger.info("=== Flag --agentic: pipeline Python không đổi; roadmap agent ngoài Cursor/Claude ===")
-        print(
-            "\n[INFO] CryptoSentinel trên máy chỉ chạy main.py luồng RSS→Postgres→Groq→Telegram.\n"
-            "[INFO] Scout/Analyst/Auditor/Broadcaster trong .claude/agents/ là playbook cho Cursor/Claude, "
-            "chưa được gọi tự động tại đây.\n"
-        )
+        logger.info("Flag --agentic được bật: chạy Agentic Runtime với fallback legacy.")
+        run_agentic_with_legacy_fallback()
+        return
+
+    logger.info("Mặc định chạy legacy pipeline ổn định.")
     run_legacy_pipeline()
 
 

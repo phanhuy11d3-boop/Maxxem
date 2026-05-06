@@ -30,6 +30,7 @@ GitHub Actions (1h)
 ```
 crypto-sentinel/
 ├── main.py                     # Nhạc trưởng điều phối
+├── agentic_runtime.py          # Runtime agentic opt-in, có fallback về legacy
 ├── models/article.py           # Định nghĩa dữ liệu (Data Contract)
 ├── scrapers/generic_rss.py     # Cào tin từ RSS
 ├── processors/insight_extractor.py # AI Engine (Groq Llama 3)
@@ -40,6 +41,7 @@ crypto-sentinel/
 │   └── monitor_agent.md        # Checklist giám sát (Monitor Agent)
 ├── characters/sentinel.json    # Persona gốc (Reference)
 ├── .github/workflows/scraper.yml # GitHub Actions Automation
+├── tests/unit/                 # Unit tests tối thiểu cho contract dữ liệu
 ├── requirements.txt            # Thư viện cần cài
 ├── MEMORY.md                   # Nhật ký sai sót & bài học của AI
 └── .env.example                # Mẫu các biến môi trường
@@ -52,13 +54,14 @@ DATABASE_URL=   # Supabase Connection String (URI)
 GROQ_API_KEY=   # Groq API key
 BOT_TOKEN=      # Telegram Bot token
 CHAT_ID=        # Telegram Chat/Channel ID
+PREMIUM_CHAT_ID= # Optional: Telegram premium channel
 ```
 
 ## CLI
 
-- `python main.py` — pipeline mặc định (RSS → Postgres → Groq → Telegram).
-- `python main.py --legacy` — tương đương mặc định (luôn là luồng tuyến tính trên repo).
-- `python main.py --agentic` — chỉ in chú thích roadmap multi-agent trong `.claude/agents/`; **không đổi** pipeline Python.
+- `python main.py` — pipeline mặc định ổn định (RSS → Postgres → Groq → Telegram).
+- `python main.py --legacy` — tương đương mặc định, dùng khi muốn ép luồng tuyến tính.
+- `python main.py --agentic` — chạy runtime agentic có kiểm soát (`Scout → Analyst → Auditor → Broadcaster`) và tự fallback về legacy nếu lỗi nghiêm trọng.
 
 ## Tài liệu quan trọng
 

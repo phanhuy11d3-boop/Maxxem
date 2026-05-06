@@ -180,7 +180,9 @@ def get_unprocessed() -> List[Article]:
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute(
-                "SELECT * FROM articles WHERE processed = FALSE AND retry_count < %s",
+                """SELECT * FROM articles
+                   WHERE processed = FALSE AND retry_count < %s
+                   ORDER BY scraped_at DESC""",
                 (MAX_RETRY,)
             )
             rows = cursor.fetchall()

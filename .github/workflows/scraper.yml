@@ -28,3 +28,4 @@ jobs:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
+          PREMIUM_CHAT_ID: ${{ secrets.PREMIUM_CHAT_ID }}

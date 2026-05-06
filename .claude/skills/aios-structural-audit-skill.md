@@ -22,9 +22,9 @@
 
 Kiểm tra các nhóm file sau, linh hoạt với tên tương đương:
 
-- **Manual & rules:** `CLAUDE.md`, `AGENTS.md`, `.claude/rules/`.
-- **Agents:** `.claude/agents/*.md`, `.codex/agents/*.toml`, `.agents/`.
-- **Skills:** `.claude/skills/*.md`, `.claude/skills/*/SKILL.md`, `.agents/skills/`.
+- **Manual & rules:** `CLAUDE.md`, `.claude/rules/`.
+- **Agents:** `.claude/agents/*.md`.
+- **Skills:** `.claude/skills/*.md`, `.claude/skills/*/SKILL.md`.
 - **Connections:** `scrapers/`, `storage/`, `utils/`, `processors/`, `config/sources.yaml`, `.env.example`.
 - **Runtime cadence:** `.github/workflows/`, `storage/state.json`, `main.py`, `scripts/audit_agent.py`.
 - **Contracts & tests:** `models/article.py`, `tests/`, `tests/data/golden_dataset.json`.
@@ -36,7 +36,7 @@ Không phạt nếu tên thư mục không canonical nhưng ý định và chứ
 ### Context (25 pts)
 | Tiêu chí | Điểm |
 |---|---:|
-| Operating manual tồn tại và mô tả AIOS rõ ràng (`CLAUDE.md` hoặc `AGENTS.md`) | 5 |
+| Operating manual tồn tại và mô tả AIOS rõ ràng (`CLAUDE.md`) | 5 |
 | Role/mission của CryptoSentinel và agent boundaries được ghi nhận | 5 |
 | Agent definitions đủ 5 vai trò: Scout, Analyst, Auditor, Broadcaster, Orchestrator | 5 |
 | Rules/SOP/reference docs tồn tại để giữ hành vi nhất quán | 5 |

@@ -241,10 +241,12 @@ jobs:
 | `processors/insight_extractor.py` | Groq LLM analysis |
 | `utils/notifier.py` | Telegram delivery |
 | `main.py` | Orchestrator |
+| `agentic_runtime.py` | Optional guarded agentic runtime (`--agentic`) |
 | `config/sources.yaml` | RSS feed list |
 | `requirements.txt` | Python dependencies |
 | `.env.example` | Secrets template |
 | `.github/workflows/scraper.yml` | GitHub Actions schedule |
+| `tests/unit/test_golden_dataset.py` | Unit test tối thiểu cho golden dataset |
 | `docs/monitor_agent.md` | Giám sát chất lượng hệ thống |
 
-**Tổng cộng: 11 file. Không có file nào thừa.**
+**Ghi chú:** File inventory này mô tả lõi runtime/test. `.claude/` là playbook vận hành cho agent, không phải dependency bắt buộc của pipeline legacy mặc định.

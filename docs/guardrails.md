@@ -53,5 +53,5 @@ Không có ngoại lệ. Dữ liệu bẩn không được phép đi sâu vào p
 
 **Áp dụng tại:** `storage/postgres.py` (PostgreSQL Supabase duy nhất — dedup không qua DB file cục bộ.)
 
-Mỗi bài báo có ID = SHA-256(URL). `ON CONFLICT (id) DO NOTHING`.
-Cùng 1 bài từ nhiều nguồn → chỉ lưu 1 lần. LLM không bao giờ xử lý lại bài đã có.
+Mỗi bài báo có ID = SHA-256(sanitized URL). `ON CONFLICT (id) DO NOTHING`.
+Cùng một URL sau khi bỏ query/trailing slash → chỉ lưu 1 lần. Nếu nhiều nguồn đăng lại cùng một nội dung bằng URL khác nhau, runtime hiện tại chưa làm story-level dedup; muốn chặn lớp đó cần thêm fingerprint theo title/source/time.

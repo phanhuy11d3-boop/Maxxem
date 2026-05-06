@@ -4,7 +4,8 @@ Quy định cách các Agent cộng tác và xử lý bất đồng.
 
 ## 1. Luồng truyền tin (Information Flow)
 - Scout → Orchestrator → Analyst → Auditor → Orchestrator → Broadcaster.
-- Mọi dữ liệu trung gian phải được ghi vào `current_task.json`.
+- Runtime hiện tại truyền dữ liệu trung gian qua `RuntimeContext` trong `agentic_runtime.py`.
+- Không tạo file state trung gian mới nếu runtime chưa thật sự đọc/ghi file đó.
 
 ## 2. Cơ chế Thách thức (Challenge Protocol)
 - **Khi Auditor REJECT**: Orchestrator PHẢI yêu cầu Analyst giải thích logic phân tích.

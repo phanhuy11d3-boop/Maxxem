@@ -62,9 +62,16 @@ class MonitorAgent:
 
     def _check_database_integrity(self):
         logger.info("Kiểm tra Data Integrity trong Database...")
-        pool = _get_pool()
+        try:
+            pool = _get_pool()
+        except Exception as e:
+            logger.warning(f"Không thể kết nối DB để audit data: {e}. Bỏ qua DB audit.")
+            self.warnings += 1
+            return
+
         if not pool:
             logger.warning("Không thể kết nối DB để audit data. Bỏ qua.")
+            self.warnings += 1
             return
 
         conn = pool.getconn()

@@ -24,4 +24,4 @@ skills: [audit-security-skill]
 
 # GIAO TIẾP:
 - Nếu REJECT: Phải nêu rõ lý do (ví dụ: "Lỗi: Analyst bỏ qua khoản lỗ 10M USD").
-- Nếu PASS: Ghi nhận vào `current_task.json` để Broadcaster tiếp quản.
+- Nếu PASS: Giữ bài trong `RuntimeContext.actionable_articles` để Broadcaster tiếp quản.

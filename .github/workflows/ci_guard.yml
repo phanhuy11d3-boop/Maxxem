@@ -53,6 +53,9 @@ jobs:
       - name: "[Test] Validate Article model (Smoke Test)"
         run: python models/article.py
 
+      - name: "[Test] Run Unit Tests"
+        run: python -m pytest tests/unit -q
+
       # ── Trọng tài Kiến trúc: Monitor Agent ────────────────────────────────
       - name: "[Audit] Run Executable Monitor Agent"
         run: python scripts/audit_agent.py

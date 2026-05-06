@@ -1,5 +1,7 @@
 # Architecture: CryptoSentinel v2 (Python Pipeline)
 
+> Production default vẫn là pipeline tuyến tính. `agentic_runtime.py` là lớp opt-in cho `python main.py --agentic`, map Scout/Analyst/Auditor/Broadcaster vào các Python handler đã kiểm soát và fallback về legacy nếu lỗi nghiêm trọng.
+
 ## 1. Sơ đồ Luồng (Linear Pipeline)
 ```text
 [GitHub Actions (cron)] ──> main.py (Orchestrator)
