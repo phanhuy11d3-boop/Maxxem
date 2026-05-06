@@ -14,7 +14,6 @@ from typing import Optional, Dict, Any, List
 from groq import Groq
 from models.article import Article, normalize_market_impact
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # --- CONFIG ---
@@ -32,8 +31,11 @@ Rules:
 - key_takeaway: max 20 words, dry tone; include at least one concrete number (%, $, count) copied from input when possible.
   If input has none, state uncertainty without hype.
 - Forbidden in key_takeaway: revolutionary, game-changer, groundbreaking, massive, huge, moon, explode, skyrocket.
-For each article return id, sentiment (-1..1), market_impact (bullish|bearish|neutral), key_takeaway.
-JSON only: {"results": [{"id": "...", "sentiment": 0.0, "market_impact": "neutral", "key_takeaway": "..."}]}"""
+- narrative_tag: pick ONE from [AI, RWA, DePIN, BTC_ETF, Regulation, Hack, Macro, Other].
+- affected_tokens: list up to 3 tokens as $SYMBOL (e.g. ["$BTC","$ETH"]); [] if unclear.
+- urgency: "breaking" for hacks/bans/exchange failures; "important" for funding>$50M/mainnet/major partnership; "context" otherwise.
+For each article return all fields.
+JSON only: {"results": [{"id": "...", "sentiment": 0.0, "market_impact": "neutral", "key_takeaway": "...", "narrative_tag": "Other", "affected_tokens": [], "urgency": "context"}]}"""
 
 def get_groq_client() -> Optional[Groq]:
     api_key = os.environ.get("GROQ_API_KEY")
@@ -98,6 +100,10 @@ def analyze_articles_batch(articles: List[Article], client: Groq) -> bool:
                 article.sentiment = float(res.get("sentiment", 0.0))
                 article.market_impact = normalize_market_impact(res.get("market_impact", "neutral"))
                 article.key_takeaway = str(res.get("key_takeaway", ""))[:300]
+                article.narrative_tag = str(res.get("narrative_tag", "Other"))
+                raw_tokens = res.get("affected_tokens", [])
+                article.affected_tokens = [str(t) for t in raw_tokens[:3]] if isinstance(raw_tokens, list) else []
+                article.urgency = str(res.get("urgency", "context"))
                 article.processed = True
             else:
                 logger.warning(f"Batch response missing ID: {article.id}")

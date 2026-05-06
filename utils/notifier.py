@@ -14,7 +14,6 @@ from typing import Optional
 
 from models.article import Article
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 def _post_to_telegram(
@@ -46,10 +45,33 @@ def _post_to_telegram(
         return False
 
 
+def _build_premium_message(article: Article) -> str:
+    """
+    Bản tin đầy đủ cho kênh Premium: giữ nguyên format HTML + thêm signal box.
+    Chỉ gọi khi article.is_actionable == True.
+    """
+    base = article.format_telegram_html()
+    extras: list[str] = []
+    if article.urgency in ("breaking", "important"):
+        extras.append(f"⚡ Urgency: <b>{html.escape(article.urgency.upper())}</b>")
+    if article.affected_tokens:
+        tokens_str = " ".join(f"<code>{html.escape(t)}</code>" for t in article.affected_tokens)
+        extras.append(f"🎯 Tokens: {tokens_str}")
+    if article.key_takeaway:
+        kt = html.escape(article.key_takeaway)
+        extras.append(f'💡 Signal: <i>"{kt}"</i>')
+    if extras:
+        signal_block = "\n─── <b>PREMIUM SIGNAL</b> ───\n" + "\n".join(extras)
+        return base + "\n" + signal_block
+    return base
+
+
 def send_telegram(article: Article) -> bool:
     """
     Gửi tin nhắn Telegram cho một bài báo.
-    Chỉ gửi nếu bài báo là 'actionable' (Bullish/Bearish).
+    - Free channel (CHAT_ID): tất cả actionable articles.
+    - Premium channel (PREMIUM_CHAT_ID, optional): breaking/important articles với full signal.
+    Chỉ trả về False nếu Free channel fail (Premium failure chỉ log cảnh báo).
     """
     if not article.is_actionable:
         logger.debug(f"Bỏ qua bài báo trung lập (Neutral): {article.id}")
@@ -69,7 +91,19 @@ def send_telegram(article: Article) -> bool:
 
     success = _post_to_telegram(token, chat_id, message_text, parse_mode="HTML")
     if success:
-        logger.info(f"✅ Đã gửi Telegram thành công: {article.title[:40]}...")
+        logger.info(f"✅ Đã gửi Telegram (free): {article.title[:40]}...")
+
+    # Kênh Premium — tuỳ chọn, không ảnh hưởng kết quả trả về của hàm này
+    premium_chat_id = os.environ.get("PREMIUM_CHAT_ID", "").strip()
+    if premium_chat_id and article.urgency in ("breaking", "important"):
+        time.sleep(1)
+        premium_text = _build_premium_message(article)
+        ok = _post_to_telegram(token, premium_chat_id, premium_text, parse_mode="HTML")
+        if ok:
+            logger.info(f"✅ Đã gửi Telegram (premium): {article.title[:40]}...")
+        else:
+            logger.warning(f"⚠️ Premium channel fail cho {article.id[:12]}. Free channel OK.")
+
     return success
 
 

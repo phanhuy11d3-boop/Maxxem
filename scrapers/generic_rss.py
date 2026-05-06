@@ -18,7 +18,6 @@ import socket
 
 from models.article import Article
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 MAX_ITEMS_PER_FEED = 30  # Giới hạn bài / feed / lần chạy — tránh flood DB khi feed tích tụ

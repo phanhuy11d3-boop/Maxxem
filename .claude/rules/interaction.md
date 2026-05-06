@@ -15,5 +15,5 @@ Quy định cách các Agent cộng tác và xử lý bất đồng.
 - Nếu Tool trả về lỗi hệ thống: Scout-Agent có nhiệm vụ kiểm tra file `.env` hoặc kết nối DB trước khi báo cáo lỗi nghiêm trọng.
 
 ## 4. Bảo mật (Security)
-- Tuyệt đối không chia sẻ `TELEGRAM_BOT_TOKEN` cho bất kỳ Agent nào ngoại trừ Broadcaster.
+- Tuyệt đối không chia sẻ `BOT_TOKEN` cho bất kỳ Agent nào ngoại trừ Broadcaster.
 - Các Agent khác chỉ được thấy 4 số cuối của Token (nếu cần log).

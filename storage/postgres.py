@@ -18,15 +18,15 @@ Triết lý thiết kế (giữ nguyên):
 import os
 import logging
 import atexit
+from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 
 import psycopg2
 from psycopg2 import pool, OperationalError
 from psycopg2.extras import RealDictCursor
 
-from models.article import Article, MarketImpact
+from models.article import Article, MarketImpact, normalize_market_impact
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Cấu trúc kết nối Supabase (Connection String) dạng:
@@ -104,11 +104,24 @@ def init_db():
                     sentiment REAL,
                     market_impact TEXT,
                     key_takeaway TEXT,
+                    narrative_tag TEXT,
+                    affected_tokens TEXT[],
+                    urgency TEXT,
+                    tg_sent BOOLEAN DEFAULT NULL,
                     scraped_at TIMESTAMPTZ NOT NULL,
                     processed BOOLEAN DEFAULT FALSE,
                     retry_count INTEGER DEFAULT 0
                 )
             ''')
+            # Migrate: thêm cột mới cho DB đã tồn tại trước khi có schema này
+            for col_sql in [
+                "ALTER TABLE articles ADD COLUMN IF NOT EXISTS narrative_tag TEXT",
+                "ALTER TABLE articles ADD COLUMN IF NOT EXISTS affected_tokens TEXT[]",
+                "ALTER TABLE articles ADD COLUMN IF NOT EXISTS urgency TEXT",
+                # tg_sent: NULL=chưa cần gửi (neutral), TRUE=đã gửi OK, FALSE=fail cần retry
+                "ALTER TABLE articles ADD COLUMN IF NOT EXISTS tg_sent BOOLEAN DEFAULT NULL",
+            ]:
+                cursor.execute(col_sql)
             # Index để truy vấn nhanh bài nào chưa xử lý → tối ưu CPU/RAM
             cursor.execute('''
                 CREATE INDEX IF NOT EXISTS idx_processed ON articles(processed)
@@ -187,7 +200,10 @@ def get_unprocessed() -> List[Article]:
                 published_at=row['published_at'],
                 summary=row['summary'],
                 scraped_at=row['scraped_at'],
-                processed=False
+                narrative_tag=row.get('narrative_tag'),
+                affected_tokens=row.get('affected_tokens'),
+                urgency=row.get('urgency'),
+                processed=False,
             )
             articles.append(art)
         except Exception as e:
@@ -197,7 +213,15 @@ def get_unprocessed() -> List[Article]:
     return articles
 
 
-def mark_processed(article_id: str, sentiment: Optional[float], market_impact: MarketImpact, key_takeaway: Optional[str]):
+def mark_processed(
+    article_id: str,
+    sentiment: Optional[float],
+    market_impact: MarketImpact,
+    key_takeaway: Optional[str],
+    narrative_tag: Optional[str] = None,
+    affected_tokens: Optional[List[str]] = None,
+    urgency: Optional[str] = None,
+):
     """
     Structured Analytics:
     Cập nhật kết quả AI trả về vào DB và chốt đánh dấu processed = TRUE.
@@ -211,9 +235,12 @@ def mark_processed(article_id: str, sentiment: Optional[float], market_impact: M
                 SET sentiment = %s,
                     market_impact = %s,
                     key_takeaway = %s,
+                    narrative_tag = %s,
+                    affected_tokens = %s,
+                    urgency = %s,
                     processed = TRUE
                 WHERE id = %s
-            ''', (sentiment, impact_str, key_takeaway, article_id))
+            ''', (sentiment, impact_str, key_takeaway, narrative_tag, affected_tokens, urgency, article_id))
         conn.commit()
     except OperationalError as e:
         conn.rollback()
@@ -240,3 +267,69 @@ def increment_retry(article_id: str):
         logger.error(f"Lỗi kết nối khi increment_retry (ID: {article_id}): {e}")
     finally:
         _get_pool().putconn(conn)
+
+
+def mark_tg_sent(article_id: str, success: bool) -> None:
+    """Ghi lại kết quả gửi Telegram: TRUE=OK, FALSE=fail cần retry lần sau."""
+    conn = _get_pool().getconn()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE articles SET tg_sent = %s WHERE id = %s",
+                (success, article_id)
+            )
+        conn.commit()
+    except OperationalError as e:
+        conn.rollback()
+        logger.error(f"Lỗi khi mark_tg_sent (ID: {article_id}): {e}")
+    finally:
+        _get_pool().putconn(conn)
+
+
+def get_tg_failed(hours: int = 48) -> List[Article]:
+    """
+    Lấy các bài đã qua LLM (processed=TRUE, is_actionable) nhưng TG gửi thất bại (tg_sent=FALSE).
+    Giới hạn 48h để tránh gửi tin cũ hơn 2 ngày.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    conn = _get_pool().getconn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """SELECT * FROM articles
+                   WHERE processed = TRUE
+                     AND tg_sent = FALSE
+                     AND market_impact IN ('bullish', 'bearish')
+                     AND scraped_at > %s
+                   ORDER BY scraped_at DESC""",
+                (cutoff,)
+            )
+            rows = cursor.fetchall()
+    except OperationalError as e:
+        logger.error(f"Lỗi khi get_tg_failed: {e}")
+        return []
+    finally:
+        _get_pool().putconn(conn)
+
+    articles = []
+    for row in rows:
+        try:
+            art = Article(
+                url=row['url'],
+                title=row['title'],
+                source=row['source'],
+                published_at=row['published_at'],
+                summary=row['summary'],
+                scraped_at=row['scraped_at'],
+                sentiment=row.get('sentiment'),
+                market_impact=normalize_market_impact(row['market_impact']) if row.get('market_impact') else None,
+                key_takeaway=row.get('key_takeaway'),
+                narrative_tag=row.get('narrative_tag'),
+                affected_tokens=row.get('affected_tokens'),
+                urgency=row.get('urgency'),
+                processed=True,
+            )
+            articles.append(art)
+        except Exception as e:
+            logger.error(f"Lỗi parse Article TG-failed (ID: {row['id']}): {e}")
+    return articles

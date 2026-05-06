@@ -1,7 +1,20 @@
 feeds:
+  # --- Tier 1: Tin tức chính thống ---
   - name: "The Block"
     url: "https://www.theblock.co/post/rss"
   - name: "CoinDesk"
     url: "https://www.coindesk.com/arc/outboundfeeds/rss/"
   - name: "Cointelegraph"
     url: "https://cointelegraph.com/rss"
+
+  # --- Tier 2: Nguồn chất lượng cao bổ sung ---
+  - name: "Decrypt"
+    url: "https://decrypt.co/feed"
+  - name: "The Defiant"
+    url: "https://thedefiant.io/feed"
+  - name: "Bitcoin Magazine"
+    url: "https://bitcoinmagazine.com/.rss/full/"
+  - name: "Crypto Briefing"
+    url: "https://cryptobriefing.com/feed/"
+  - name: "DL News"
+    url: "https://www.dlnews.com/arc/outboundfeeds/rss/"

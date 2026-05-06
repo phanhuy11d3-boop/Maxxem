@@ -12,5 +12,5 @@
 - Nếu phát hiện nguồn tin thường xuyên đưa tin sai lệch, đánh dấu "Low Reliability" để Auditor tăng cường kiểm tra.
 
 ## 3. Tool Interaction
-- Sử dụng `python main.py scrape` để lấy dữ liệu.
+- Sử dụng `python main.py` (hoặc `python main.py --legacy`) để chạy pipeline.
 - Kiểm tra số lượng `new_count` để báo cáo cho Orchestrator.

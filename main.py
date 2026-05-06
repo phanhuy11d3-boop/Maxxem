@@ -4,184 +4,249 @@ main.py
 Nhạc trưởng điều phối toàn bộ luồng chạy của CryptoSentinel.
 Kết nối 4 Phase: Scraper (Lấy tin) -> Storage (Lưu trữ/Dedup) -> AI (Phân tích) -> Telegram (Báo cáo).
 
-Cải tiến v2.2:
-  - Theo dõi error counters (db_errors, llm_errors, tg_errors) cho từng giai đoạn.
-  - Gửi Heartbeat tổng kết pipeline qua Telegram sau mỗi lần chạy.
-  - Đo thời gian chạy toàn bộ pipeline (duration).
+Cải tiến v2.3:
+  - FIX: Heartbeat luôn gửi dù pipeline crash ở bất kỳ bước nào (try...finally).
+  - FIX: Xử lý toàn bộ backlog theo chunks — không còn cắt cứng 20 bài/lần.
+  - FIX: Retry Telegram cho bài bị TG-fail (tg_sent=FALSE) ở lần chạy tiếp theo.
+  - FIX: logging.basicConfig chỉ cấu hình một lần tại đây; các module dùng getLogger(__name__).
 """
 
 import time
+import json
 import logging
 import argparse
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Tuple
 
-from storage.postgres import init_db, upsert_article, get_unprocessed, mark_processed, increment_retry
+from groq import Groq
+
+from storage.postgres import (
+    init_db, upsert_article, get_unprocessed, mark_processed, increment_retry,
+    mark_tg_sent, get_tg_failed,
+)
 from scrapers.generic_rss import scrape_all_feeds
 from processors.insight_extractor import get_groq_client, triage_articles, analyze_articles_batch
 from models.article import MarketImpact
 from utils.notifier import send_telegram, send_heartbeat
 
+# Cấu hình logging tập trung một lần duy nhất — tất cả module con kế thừa qua getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Giới hạn số bài xử lý AI mỗi lần chạy để đảm bảo không dính rate limit nếu tích tụ backlog quá lớn
+# Kích thước mỗi lần gọi Groq API (rate-limit safe). Pipeline sẽ lặp qua toàn bộ backlog.
 MAX_BATCH_SIZE = 20
 
-def run_legacy_pipeline():
-    """Luồng xử lý tuyến tính truyền thống (Linear Pipeline v2.2)"""
-    start_time = time.monotonic()
-    logger.info("=== Bắt đầu chạy LEGACY pipeline CryptoSentinel ===")
+STATE_FILE = Path(__file__).parent / "storage" / "state.json"
 
-    # --- Error counters (Observability) ---
-    db_errors = 0
+
+def _update_state(db_errors: int, llm_errors: int, tg_errors: int) -> None:
+    """Ghi trạng thái pipeline vào state.json sau mỗi lần chạy."""
+    try:
+        current = json.loads(STATE_FILE.read_text(encoding="utf-8")) if STATE_FILE.exists() else {}
+        current.update({
+            "last_run": datetime.now(timezone.utc).isoformat(),
+            "current_phase": "idle",
+            "system_status": "degraded" if (db_errors + llm_errors + tg_errors) > 0 else "healthy",
+            "errors": {"db": db_errors, "llm": llm_errors, "telegram": tg_errors},
+        })
+        STATE_FILE.write_text(json.dumps(current, indent=2, ensure_ascii=False), encoding="utf-8")
+    except Exception as e:
+        logger.warning(f"Không thể ghi state.json: {e}")
+
+
+def _process_chunk(
+    chunk: list, groq_client: Groq
+) -> Tuple[int, int, int]:
+    """
+    Xử lý một chunk bài qua Triage → Batch Analysis → Telegram.
+    Trả về (ai_processed, llm_errors, tg_errors) cho chunk này.
+    """
+    ai_processed = 0
     llm_errors = 0
     tg_errors = 0
 
-    # 1. Khởi tạo Database (Supabase PostgreSQL)
-    logger.info("1. Đang khởi tạo/kiểm tra cấu trúc Database...")
+    logger.info(f"   -> Triage {len(chunk)} bài...")
+    triage_results = triage_articles(chunk, groq_client)
+    n_triage = min(len(triage_results), len(chunk))
+
+    if len(triage_results) != len(chunk):
+        logger.warning(
+            "Độ dài triage (%s) ≠ chunk (%s); %s bài cuối fallback high-impact.",
+            len(triage_results), len(chunk), len(chunk) - n_triage,
+        )
+
+    high_impact = []
+    for i in range(n_triage):
+        article = chunk[i]
+        if triage_results[i]:
+            high_impact.append(article)
+        else:
+            mark_processed(
+                article.id, 0.0, MarketImpact.NEUTRAL,
+                "Routine news - skipped deep analysis.",
+            )
+            ai_processed += 1
+
+    # Bài thiếu nhãn triage → fallback coi như high-impact
+    for i in range(n_triage, len(chunk)):
+        high_impact.append(chunk[i])
+
+    low_skip = sum(1 for i in range(n_triage) if not triage_results[i])
+    logger.info(
+        f"   -> Triage xong: {len(high_impact)} high-impact | {low_skip} low-impact đã đóng."
+    )
+
+    if not high_impact:
+        return ai_processed, llm_errors, tg_errors
+
+    success = analyze_articles_batch(high_impact, groq_client)
+    if not success:
+        llm_errors += len(high_impact)
+        logger.error("Batch analysis failed cho chunk.")
+        for article in high_impact:
+            increment_retry(article.id)
+        return ai_processed, llm_errors, tg_errors
+
+    for article in high_impact:
+        if not article.processed:
+            llm_errors += 1
+            increment_retry(article.id)
+            logger.warning("LLM thiếu kết quả cho id=%s, tăng retry.", article.id[:12])
+            continue
+
+        # Luôn mark_processed ngay sau LLM — tránh retry vô tận dù TG sau đó có fail
+        mark_processed(
+            article_id=article.id,
+            sentiment=article.sentiment,
+            market_impact=article.market_impact or MarketImpact.NEUTRAL,
+            key_takeaway=article.key_takeaway,
+            narrative_tag=article.narrative_tag,
+            affected_tokens=article.affected_tokens,
+            urgency=article.urgency,
+        )
+        ai_processed += 1
+
+        if article.is_actionable:
+            sent = send_telegram(article)
+            mark_tg_sent(article.id, sent)  # ghi kết quả TG để có thể retry sau
+            if not sent:
+                tg_errors += 1
+                logger.warning(f"Telegram fail cho {article.id[:12]} — sẽ retry lần chạy sau.")
+
+    return ai_processed, llm_errors, tg_errors
+
+
+def run_legacy_pipeline() -> None:
+    """Luồng xử lý tuyến tính v2.3 — heartbeat được đảm bảo bởi try...finally."""
+    start_time = time.monotonic()
+    logger.info("=== Bắt đầu chạy pipeline CryptoSentinel v2.3 ===")
+
+    db_errors = 0
+    llm_errors = 0
+    tg_errors = 0
+    scraped_count = 0
+    new_count = 0
+    ai_processed = 0
+
+    # Phase 1: init_db — nếu fail, gửi heartbeat ngay và thoát
     try:
         init_db()
     except Exception as e:
         logger.critical(f"Không thể khởi tạo DB. Dừng pipeline: {e}")
-        # Heartbeat lỗi chí mạng — DB không lên được thì không làm gì được
         send_heartbeat(
             scraped=0, new=0, ai_processed=0,
             db_errors=1, llm_errors=0, tg_errors=0,
-            duration_s=time.monotonic() - start_time
+            duration_s=time.monotonic() - start_time,
         )
         return
 
-    # 2. Cào tin từ RSS
-    logger.info("2. Đang cào tin tức từ các nguồn RSS...")
-    articles = scrape_all_feeds()
+    # Phase 2-7: mọi lỗi không mong đợi đều được bắt; finally đảm bảo heartbeat luôn gửi
+    try:
+        # Phase 2: Retry Telegram-failed articles từ lần chạy trước
+        tg_failed = get_tg_failed()
+        if tg_failed:
+            logger.info(f"2. Retry {len(tg_failed)} bài TG-failed từ lần chạy trước...")
+            for article in tg_failed:
+                sent = send_telegram(article)
+                mark_tg_sent(article.id, sent)
+                if not sent:
+                    tg_errors += 1
 
-    # 3. Lọc trùng & Lưu DB (ON CONFLICT DO NOTHING)
-    logger.info(f"3. Lưu vào Database (Deduplication)... Tổng bài kéo về: {len(articles)}")
-    new_count = 0
-    for article in articles:
-        result = upsert_article(article)
-        if result is None:   # upsert trả None khi có DB error
-            db_errors += 1
-        elif result:
-            new_count += 1
-    logger.info(f"   -> Phát hiện {new_count} bài báo hoàn toàn mới.")
+        # Phase 3: Cào tin từ RSS
+        logger.info("3. Đang cào tin tức từ các nguồn RSS...")
+        articles = scrape_all_feeds()
+        scraped_count = len(articles)
 
-    # 4. Lấy danh sách cần phân tích AI
-    unprocessed = get_unprocessed()
-    batch = unprocessed[:MAX_BATCH_SIZE]
-    logger.info(f"4. Bắt đầu xử lý AI (Token FinOps Batch). Tổng cần: {len(unprocessed)}, Lấy ra: {len(batch)}")
+        # Phase 4: Dedup + Lưu DB
+        logger.info(f"4. Deduplication... Tổng scraped: {scraped_count}")
+        for article in articles:
+            result = upsert_article(article)
+            if result is None:
+                db_errors += 1
+            elif result:
+                new_count += 1
+        logger.info(f"   -> {new_count} bài mới.")
 
-    if batch:
-        ai_processed = 0
-        groq_client = get_groq_client()
-        if not groq_client:
-            logger.error("Dừng phase AI vì không thể khởi tạo Groq client.")
-            llm_errors += len(batch)
-            for article in batch:
-                increment_retry(article.id)
+        # Phase 5: AI processing — xử lý TOÀN BỘ queue theo chunks MAX_BATCH_SIZE
+        unprocessed = get_unprocessed()
+        total_unprocessed = len(unprocessed)
+        logger.info(
+            f"5. Queue unprocessed: {total_unprocessed} bài. "
+            f"Xử lý theo chunks {MAX_BATCH_SIZE}..."
+        )
+
+        if not unprocessed:
+            logger.info("Không có bài báo nào cần xử lý AI.")
         else:
-            logger.info(f"   -> Đang chạy Triage cho {len(batch)} bài báo...")
-            triage_results = triage_articles(batch, groq_client)
-            n_triage = min(len(triage_results), len(batch))
-            if len(triage_results) != len(batch):
-                logger.warning(
-                    "Độ dài triage (%s) ≠ batch (%s); dùng %s nhãn đầu + fallback high-impact.",
-                    len(triage_results),
-                    len(batch),
-                    n_triage,
-                )
-            triage_fallback = len(batch) - n_triage
+            groq_client = get_groq_client()
+            if not groq_client:
+                logger.error("Không thể khởi tạo Groq client. Bỏ qua phase AI.")
+                llm_errors += total_unprocessed
+                for article in unprocessed:
+                    increment_retry(article.id)
+            else:
+                num_chunks = (total_unprocessed + MAX_BATCH_SIZE - 1) // MAX_BATCH_SIZE
+                for idx, chunk_start in enumerate(range(0, total_unprocessed, MAX_BATCH_SIZE), 1):
+                    chunk = unprocessed[chunk_start:chunk_start + MAX_BATCH_SIZE]
+                    logger.info(f"   Chunk {idx}/{num_chunks} ({len(chunk)} bài)...")
+                    c_ai, c_llm, c_tg = _process_chunk(chunk, groq_client)
+                    ai_processed += c_ai
+                    llm_errors += c_llm
+                    tg_errors += c_tg
 
-            high_impact_batch = []
+    except Exception as e:
+        logger.critical(f"Pipeline crash không mong đợi: {e}", exc_info=True)
+        db_errors += 1
 
-            for i in range(n_triage):
-                article = batch[i]
-                if triage_results[i]:
-                    high_impact_batch.append(article)
-                else:
-                    mark_processed(
-                        article.id,
-                        0.0,
-                        MarketImpact.NEUTRAL,
-                        "Routine news - skipped deep analysis.",
-                    )
-                    ai_processed += 1
-
-            for i in range(n_triage, len(batch)):
-                high_impact_batch.append(batch[i])
-            if triage_fallback:
-                logger.warning(
-                    "%s bài thiếu nhãn triage (độ dài response); coi như high-impact.",
-                    triage_fallback,
-                )
-
-            low_skip = sum(1 for i in range(n_triage) if not triage_results[i])
-            logger.info(
-                f"   -> Triage xong: {len(high_impact_batch)} tin cần phân tích sâu | "
-                f"{low_skip} low-impact đã đóng | "
-                f"{triage_fallback} bài fallback (thiếu nhãn triage)."
-            )
-
-            if high_impact_batch:
-                success = analyze_articles_batch(high_impact_batch, groq_client)
-                if not success:
-                    llm_errors += len(high_impact_batch)
-                    logger.error("Batch analysis failed.")
-                    for article in high_impact_batch:
-                        increment_retry(article.id)
-                else:
-                    for article in high_impact_batch:
-                        if not article.processed:
-                            llm_errors += 1
-                            increment_retry(article.id)
-                            logger.warning(
-                                "LLM thiếu kết quả cho id=%s..., tăng retry.",
-                                article.id[:12],
-                            )
-                            continue
-                        sent = send_telegram(article)
-                        if not sent and article.is_actionable:
-                            tg_errors += 1
-                            logger.warning(f"Telegram fail cho {article.id[:12]}.")
-                        else:
-                            mark_processed(
-                                article_id=article.id,
-                                sentiment=article.sentiment,
-                                market_impact=article.market_impact
-                                or MarketImpact.NEUTRAL,
-                                key_takeaway=article.key_takeaway,
-                            )
-                            ai_processed += 1
-    else:
-        ai_processed = 0
-        logger.info("Không có bài báo nào cần xử lý.")
-
-    duration = time.monotonic() - start_time
-    logger.info(
-        f"=== Pipeline Hoàn Tất | "
-        f"Mới: {new_count} | AI: {ai_processed} | "
-        f"Lỗi DB/LLM/TG: {db_errors}/{llm_errors}/{tg_errors} | "
-        f"Thời gian: {duration:.1f}s ==="
-    )
-
-    # 6. Gửi Heartbeat tổng kết (luôn chạy dù có lỗi hay không)
-    send_heartbeat(
-        scraped=len(articles),
-        new=new_count,
-        ai_processed=ai_processed,
-        db_errors=db_errors,
-        llm_errors=llm_errors,
-        tg_errors=tg_errors,
-        duration_s=duration
-    )
+    finally:
+        # Luôn chạy — kể cả khi crash ở bất kỳ bước nào trên
+        duration = time.monotonic() - start_time
+        logger.info(
+            f"=== Pipeline Hoàn Tất | "
+            f"Mới: {new_count} | AI: {ai_processed} | "
+            f"Lỗi DB/LLM/TG: {db_errors}/{llm_errors}/{tg_errors} | "
+            f"Thời gian: {duration:.1f}s ==="
+        )
+        send_heartbeat(
+            scraped=scraped_count,
+            new=new_count,
+            ai_processed=ai_processed,
+            db_errors=db_errors,
+            llm_errors=llm_errors,
+            tg_errors=tg_errors,
+            duration_s=duration,
+        )
+        _update_state(db_errors=db_errors, llm_errors=llm_errors, tg_errors=tg_errors)
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="CryptoSentinel Orchestrator")
-    parser.add_argument("--legacy", action="store_true", help="Chạy luồng tuyến tính cũ (v2.2)")
+    parser.add_argument("--legacy", action="store_true", help="Chạy luồng tuyến tính (v2.3)")
     parser.add_argument(
         "--agentic",
         action="store_true",
-        help="In chú thích multi-agent roadmap; pipeline runtime vẫn là luồng tuyến tính (xem README).",
+        help="In chú thích multi-agent roadmap; pipeline runtime vẫn là luồng tuyến tính.",
     )
     args = parser.parse_args()
 
@@ -192,9 +257,8 @@ def main():
             "[INFO] Scout/Analyst/Auditor/Broadcaster trong .claude/agents/ là playbook cho Cursor/Claude, "
             "chưa được gọi tự động tại đây.\n"
         )
-        run_legacy_pipeline()
-    else:
-        run_legacy_pipeline()
+    run_legacy_pipeline()
+
 
 if __name__ == "__main__":
     main()

@@ -17,7 +17,7 @@ import re
 from urllib.parse import urlparse, urlunparse
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Optional
+from typing import List, Optional
 
 from pydantic import BaseModel, Field, HttpUrl, computed_field, field_validator
 
@@ -116,6 +116,20 @@ class Article(BaseModel):
         default=None,
         max_length=300,
         description="1 câu tóm tắt, max 20 từ, phải có số liệu cụ thể. LLM viết theo The Block style."
+    )
+
+    # --- Nhóm 3b: Optional — LLM điền (signal quality fields) ---
+    narrative_tag: Optional[str] = Field(
+        default=None,
+        description="Narrative tag: AI | RWA | DePIN | BTC_ETF | Regulation | Hack | Macro | Other",
+    )
+    affected_tokens: Optional[List[str]] = Field(
+        default=None,
+        description="Tối đa 3 token liên quan, format $SYMBOL. Ví dụ: ['$BTC', '$SOL']",
+    )
+    urgency: Optional[str] = Field(
+        default=None,
+        description="Mức khẩn cấp: breaking | important | context",
     )
 
     # --- Nhóm 4: Metadata hệ thống ---
@@ -226,19 +240,35 @@ class Article(BaseModel):
             else "N/A"
         )
 
+        # Urgency prefix cho header
+        urgency_prefix = {
+            "breaking": "🔴 <b>BREAKING</b> | ",
+            "important": "⚡ <b>IMPORTANT</b> | ",
+        }.get(self.urgency or "context", "")
+
         lines = [
-            f"{impact_emoji} <b>{label}</b> | {source_esc}",
-            "",
-            title_esc,
-            "",
-            f"Sentiment: {sentiment_str}",
+            f"{urgency_prefix}{impact_emoji} <b>{label}</b> | {source_esc}",
         ]
+
+        # Narrative badge + affected tokens (dòng phụ ngay dưới header)
+        meta_parts = []
+        if self.narrative_tag and self.narrative_tag != "Other":
+            meta_parts.append(f"🏷 <code>{html.escape(self.narrative_tag)}</code>")
+        if self.affected_tokens:
+            tokens_str = " ".join(f"<code>{html.escape(t)}</code>" for t in self.affected_tokens)
+            meta_parts.append(f"🪙 {tokens_str}")
+        if meta_parts:
+            lines.append("  ".join(meta_parts))
+
+        lines.extend(["", title_esc, "", f"Sentiment: {sentiment_str}"])
+
         if self.key_takeaway:
             kt = html.escape(self.key_takeaway)
             lines.append(f'Key: <i>"{kt}"</i>')
+
         href = html.escape(str(self.url))
         lines.extend(["", f'<a href="{href}">Source link</a>', ""])
-        lines.append(html.escape("⚠️ AI-generated insight. Verify data before trading."))
+        lines.append("⚠️ AI-generated insight. Verify data before trading.")
         return "\n".join(lines)
 
 
