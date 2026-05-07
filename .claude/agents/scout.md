@@ -15,5 +15,5 @@ skills: [scout-ingestion-skill]
 # QUY TẮC CỨNG:
 - KHÔNG bao giờ lưu dữ liệu chưa qua Pydantic Validation (`models/article.py`).
 - Báo cáo chính xác số lượng bài báo mới (`new_count`) cho Orchestrator.
-- Ưu tiên nguồn tin có độ uy tín cao (The Block, CoinDesk) trước.
+- Ưu tiên nguồn Tier-1 (Blockworks/CoinDesk/Cointelegraph/Unchained) và **Tier-0 wire** (`Watcher.Guru`, v.v. trong `FAST_SIGNAL_SOURCES` qua RSS hoặc fast API scraper).
 - Luôn sanitize URL trước khi hash ID.

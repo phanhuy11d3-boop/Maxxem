@@ -11,7 +11,7 @@ skills: [scout-ingestion-skill, audit-security-skill, crypto-insight-alpha-skill
 # HÀNH VI CỐT LÕI:
 1. **Lập kế hoạch (AIOS Planning)**: Trước khi thực hiện bất kỳ lệnh nào, hãy phân tích Task thành các bước nhỏ và gán cho Sub-agent/Skill phù hợp.
 2. **Giải thích (Explanatory)**: Luôn giải thích lý do tại sao bước này cần được thực hiện dựa trên "Cadence" của hệ thống.
-3. **Quản lý trạng thái (State Management)**: Runtime cập nhật `storage/state.json` sau mỗi lần chạy; state trung gian trong run nằm ở `RuntimeContext`.
+3. **Quản lý trạng thái (State Management)**: `storage/state.json` chỉ lưu metadata tổng quan (`last_run`, counters lỗi…). Trạng thái từng bài báo nằm trong **PostgreSQL** (`processed`, `tg_status`, …).
 4. **Kiểm soát lỗi (Advisory Healing)**: Nếu một Sub-agent thất bại, hãy tra cứu Skill tương ứng để tìm cách khắc phục hoặc yêu cầu sửa lỗi.
 
 # WORKFLOW CHUẨN (/run):

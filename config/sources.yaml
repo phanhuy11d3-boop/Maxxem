@@ -1,11 +1,19 @@
 feeds:
+  # --- Tier 0: Fast signal wires (ưu tiên tốc độ) ---
+  - name: "Watcher.Guru"
+    url: "https://watcher.guru/news/feed"
+
   # --- Tier 1: Tin tức chính thống ---
-  - name: "The Block"
-    url: "https://www.theblock.co/post/rss"
+  # The Block (theblock.co) bị thay bằng Blockworks vì theblock.co trả HTTP 403
+  # cho mọi RSS scraper từ 2026-05 (chặn bot server-side, không thể bypass bền vững).
+  - name: "Blockworks"
+    url: "https://blockworks.co/feed"
   - name: "CoinDesk"
     url: "https://www.coindesk.com/arc/outboundfeeds/rss/"
   - name: "Cointelegraph"
     url: "https://cointelegraph.com/rss"
+  - name: "Unchained Crypto"
+    url: "https://unchainedcrypto.com/feed/"
 
   # --- Tier 2: Nguồn chất lượng cao bổ sung ---
   - name: "Decrypt"
@@ -14,7 +22,7 @@ feeds:
     url: "https://thedefiant.io/feed"
   - name: "Bitcoin Magazine"
     url: "https://bitcoinmagazine.com/.rss/full/"
-  - name: "Crypto Briefing"
-    url: "https://cryptobriefing.com/feed/"
+  - name: "Protos"
+    url: "https://protos.com/feed/"
   - name: "DL News"
     url: "https://www.dlnews.com/arc/outboundfeeds/rss/"

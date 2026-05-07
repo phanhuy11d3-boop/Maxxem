@@ -17,18 +17,21 @@ import logging
 import argparse
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Tuple
+from typing import Optional, Tuple
 
 from groq import Groq
 
 from storage.postgres import (
-    init_db, upsert_article, get_unprocessed, mark_processed, increment_retry,
-    mark_tg_sent, get_tg_failed,
+    init_db, upsert_article, get_unprocessed, mark_processed_with_tg,
+    increment_retry, get_tg_dispatch_queue, mark_tg_attempt, expire_stale_tg_queue,
+    get_outbox_kpis,
 )
 from scrapers.generic_rss import scrape_all_feeds
-from processors.insight_extractor import get_groq_client, triage_articles, analyze_articles_batch
+from processors.insight_extractor import (
+    get_groq_client, triage_articles, analyze_articles_batch, BatchOutcome,
+)
 from models.article import MarketImpact
-from utils.notifier import send_telegram, send_heartbeat
+from utils.notifier import send_telegram, send_heartbeat, send_admin_alert
 
 # Cấu hình logging tập trung một lần duy nhất — tất cả module con kế thừa qua getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -36,6 +39,12 @@ logger = logging.getLogger(__name__)
 
 # Kích thước mỗi lần gọi Groq API (rate-limit safe). Pipeline sẽ lặp qua toàn bộ backlog.
 MAX_BATCH_SIZE = 20
+LOW_CONF_SENTIMENT_ABS_THRESHOLD = 0.25
+FAST_SIGNAL_SOURCES = {"Watcher.Guru", "Lookonchain", "UnusualWhales", "Arkham Alerts"}
+TIER1_SOURCES = {
+    "Blockworks", "CoinDesk", "Cointelegraph", "Unchained Crypto",
+    *FAST_SIGNAL_SOURCES,
+}
 
 STATE_FILE = Path(__file__).parent / "storage" / "state.json"
 
@@ -55,6 +64,40 @@ def _update_state(db_errors: int, llm_errors: int, tg_errors: int) -> None:
         logger.warning(f"Không thể ghi state.json: {e}")
 
 
+def _dispatch_tg_queue(max_attempts: int = 3) -> Tuple[int, int, int]:
+    """
+    Outbox dispatcher:
+      - expire stale (>30 phút) trước khi gửi
+      - gửi queue pending/failed còn giá trị
+      - retry tối đa max_attempts cho mỗi bài
+
+    Returns: (actionable_count, sent_ok_count, tg_errors_count)
+    """
+    actionable = 0
+    sent_ok = 0
+    tg_errors = 0
+
+    expired = expire_stale_tg_queue(max_age_minutes=30)
+    if expired:
+        logger.warning("Outbox expired stale actionable: %s bài.", expired)
+        send_admin_alert(f"⏭️ <b>TG_EXPIRED</b>\nExpired stale actionable: {expired}")
+
+    queue = get_tg_dispatch_queue(max_age_minutes=30, max_attempts=max_attempts)
+    if not queue:
+        return actionable, sent_ok, tg_errors
+
+    logger.info("Dispatch TG queue: %s bài pending/failed.", len(queue))
+    for article in queue:
+        actionable += 1
+        sent = send_telegram(article)
+        mark_tg_attempt(article.id, success=sent, error=None if sent else "send_failed")
+        if sent:
+            sent_ok += 1
+        else:
+            tg_errors += 1
+    return actionable, sent_ok, tg_errors
+
+
 def _process_chunk(
     chunk: list, groq_client: Groq
 ) -> Tuple[int, int, int, int, int]:
@@ -68,57 +111,76 @@ def _process_chunk(
     actionable = 0
     tg_sent_ok = 0
 
-    logger.info(f"   -> Triage {len(chunk)} bài...")
-    triage_results = triage_articles(chunk, groq_client)
-    n_triage = min(len(triage_results), len(chunk))
+    tier1 = [a for a in chunk if a.source in TIER1_SOURCES]
+    tier2 = [a for a in chunk if a.source not in TIER1_SOURCES]
+    low_conf_ids: set[str] = set()
 
-    if len(triage_results) != len(chunk):
-        logger.warning(
-            "Độ dài triage (%s) ≠ chunk (%s); %s bài cuối fallback high-impact.",
-            len(triage_results), len(chunk), len(chunk) - n_triage,
-        )
-
-    high_impact = []
-    for i in range(n_triage):
-        article = chunk[i]
-        if triage_results[i]:
+    # Tier-1 luôn vào 70B (anti-miss). Triage 8B chỉ áp dụng cho Tier-2.
+    high_impact = list(tier1)
+    if tier2:
+        logger.info("   -> Triage %s bài Tier-2...", len(tier2))
+        triage_map = triage_articles(tier2, groq_client)  # Dict[id -> bool]
+        for article in tier2:
             high_impact.append(article)
-        else:
-            mark_processed(
-                article.id, 0.0, MarketImpact.NEUTRAL,
-                "Routine news - skipped deep analysis.",
-            )
-            ai_processed += 1
-
-    # Bài thiếu nhãn triage → fallback coi như high-impact
-    for i in range(n_triage, len(chunk)):
-        high_impact.append(chunk[i])
-
-    low_skip = sum(1 for i in range(n_triage) if not triage_results[i])
+            if not triage_map.get(article.id, True):
+                low_conf_ids.add(article.id)
     logger.info(
-        f"   -> Triage xong: {len(high_impact)} high-impact | {low_skip} low-impact đã đóng."
+        "   -> Queue chunk: tier1=%s | tier2=%s | low_conf_candidates=%s",
+        len(tier1), len(tier2), len(low_conf_ids),
     )
 
-    if not high_impact:
+    outcome, missing = analyze_articles_batch(high_impact, groq_client)
+
+    if outcome == BatchOutcome.STRUCTURAL_FAIL:
+        # JSON malformed / contract vi phạm — retry vô ích, chỉ lãng phí token.
+        # KHÔNG tăng retry_count (tránh chôn vĩnh viễn). Báo admin để fix prompt.
+        llm_errors += len(high_impact)
+        logger.error("Batch STRUCTURAL_FAIL — không tăng retry, alert admin.")
+        send_admin_alert(
+            "🚨 <b>LLM_STRUCTURAL_FAIL</b>\n"
+            f"Chunk size={len(high_impact)}. Prompt/contract cần xem lại."
+        )
         return ai_processed, llm_errors, tg_errors, actionable, tg_sent_ok
 
-    success = analyze_articles_batch(high_impact, groq_client)
-    if not success:
+    if outcome == BatchOutcome.TRANSIENT_FAIL:
+        # Rate limit / network — đáng retry. Tăng retry nhưng <= MAX_RETRY,
+        # cron 1 phút đảm bảo bài vẫn còn trong cửa sổ live.
         llm_errors += len(high_impact)
-        logger.error("Batch analysis failed cho chunk.")
+        logger.warning("Batch TRANSIENT_FAIL — tăng retry, sẽ thử lại lần sau.")
+        send_admin_alert(
+            f"⚠️ <b>LLM_TRANSIENT_FAIL</b>\nChunk size={len(high_impact)}"
+        )
         for article in high_impact:
             increment_retry(article.id)
         return ai_processed, llm_errors, tg_errors, actionable, tg_sent_ok
 
+    # outcome == OK
     for article in high_impact:
-        if not article.processed:
-            llm_errors += 1
-            increment_retry(article.id)
-            logger.warning("LLM thiếu kết quả cho id=%s, tăng retry.", article.id[:12])
-            continue
+        # Vector 3b: bài "missing" đã được analyze_articles_batch đánh dấu
+        # processed=True + low_confidence=True + neutral. Caller chỉ ghi DB,
+        # KHÔNG tăng retry_count cho bài bị LLM bỏ quên.
+        article.low_confidence = bool(getattr(article, "low_confidence", False)) or (
+            article.id in low_conf_ids
+            or (
+                article.sentiment is not None
+                and abs(article.sentiment) < LOW_CONF_SENTIMENT_ABS_THRESHOLD
+            )
+        )
 
-        # Luôn mark_processed ngay sau LLM — tránh retry vô tận dù TG sau đó có fail
-        mark_processed(
+        # Phase 1 outbox state machine:
+        #   - actionable -> enqueue pending
+        #   - neutral    -> no tg state
+        # Gửi thực tế do _dispatch_tg_queue() xử lý để kiểm soát retry/expiry tập trung.
+        tg_outcome: Optional[bool] = None
+        tg_status: Optional[str] = None
+        tg_attempts: Optional[int] = None
+        if article.is_actionable:
+            actionable += 1
+            tg_status = "pending"
+            tg_outcome = None
+            tg_attempts = 0
+
+        mark_processed_with_tg(
             article_id=article.id,
             sentiment=article.sentiment,
             market_impact=article.market_impact or MarketImpact.NEUTRAL,
@@ -126,18 +188,18 @@ def _process_chunk(
             narrative_tag=article.narrative_tag,
             affected_tokens=article.affected_tokens,
             urgency=article.urgency,
+            low_confidence=article.low_confidence,
+            tg_sent=tg_outcome,
+            tg_status=tg_status,
+            tg_attempts=tg_attempts,
         )
         ai_processed += 1
 
-        if article.is_actionable:
-            actionable += 1
-            sent = send_telegram(article)
-            mark_tg_sent(article.id, sent)  # ghi kết quả TG để có thể retry sau
-            if sent:
-                tg_sent_ok += 1
-            else:
-                tg_errors += 1
-                logger.warning(f"Telegram fail cho {article.id[:12]} — sẽ retry lần chạy sau.")
+    if missing:
+        send_admin_alert(
+            f"⚠️ <b>LLM_MISSING_RESULTS</b>\n"
+            f"{len(missing)}/{len(high_impact)} bài bị 70B bỏ quên — đã đóng low_conf."
+        )
 
     return ai_processed, llm_errors, tg_errors, actionable, tg_sent_ok
 
@@ -161,6 +223,7 @@ def run_legacy_pipeline() -> None:
         init_db()
     except Exception as e:
         logger.critical(f"Không thể khởi tạo DB. Dừng pipeline: {e}")
+        send_admin_alert(f"🚨 <b>PIPELINE_INIT_DB_FAIL</b>\n{e!s}")
         send_heartbeat(
             scraped=0, new=0, ai_processed=0,
             db_errors=1, llm_errors=0, tg_errors=0,
@@ -170,18 +233,11 @@ def run_legacy_pipeline() -> None:
 
     # Phase 2-7: mọi lỗi không mong đợi đều được bắt; finally đảm bảo heartbeat luôn gửi
     try:
-        # Phase 2: Retry Telegram-failed/never-sent articles từ lần chạy trước
-        tg_failed = get_tg_failed()
-        if tg_failed:
-            logger.info(f"2. Retry {len(tg_failed)} bài TG cần (re)gửi từ trước...")
-            for article in tg_failed:
-                actionable_total += 1
-                sent = send_telegram(article)
-                mark_tg_sent(article.id, sent)
-                if sent:
-                    tg_sent_ok_total += 1
-                else:
-                    tg_errors += 1
+        # Phase 2: Dispatch queue cũ (pending/failed) trước khi ingest mới
+        c_act, c_ok, c_tg = _dispatch_tg_queue(max_attempts=3)
+        actionable_total += c_act
+        tg_sent_ok_total += c_ok
+        tg_errors += c_tg
 
         # Phase 3: Cào tin từ RSS
         logger.info("3. Đang cào tin tức từ các nguồn RSS...")
@@ -200,6 +256,12 @@ def run_legacy_pipeline() -> None:
 
         # Phase 5: AI processing — xử lý TOÀN BỘ queue theo chunks MAX_BATCH_SIZE
         unprocessed = get_unprocessed()
+        unprocessed.sort(
+            key=lambda a: (
+                0 if a.source in TIER1_SOURCES else 1,
+                -a.scraped_at.timestamp(),
+            )
+        )
         total_unprocessed = len(unprocessed)
         logger.info(
             f"5. Queue unprocessed: {total_unprocessed} bài. "
@@ -227,13 +289,21 @@ def run_legacy_pipeline() -> None:
                     actionable_total += c_act
                     tg_sent_ok_total += c_ok
 
+        # Phase 6: Dispatch các actionable vừa enqueue trong run hiện tại
+        c_act, c_ok, c_tg = _dispatch_tg_queue(max_attempts=3)
+        actionable_total += c_act
+        tg_sent_ok_total += c_ok
+        tg_errors += c_tg
+
     except Exception as e:
         logger.critical(f"Pipeline crash không mong đợi: {e}", exc_info=True)
+        send_admin_alert(f"🚨 <b>PIPELINE_CRASH</b>\n{e!s}")
         db_errors += 1
 
     finally:
         # Luôn chạy — kể cả khi crash ở bất kỳ bước nào trên
         duration = time.monotonic() - start_time
+        kpi = get_outbox_kpis(max_age_minutes=30)
         logger.info(
             f"=== Pipeline Hoàn Tất | "
             f"Mới: {new_count} | AI: {ai_processed} | "
@@ -251,6 +321,10 @@ def run_legacy_pipeline() -> None:
             duration_s=duration,
             actionable=actionable_total,
             tg_sent_ok=tg_sent_ok_total,
+            pending_count=kpi["pending_count"],
+            failed_count=kpi["failed_count"],
+            expired_count_60m=kpi["expired_count_60m"],
+            oldest_pending_age_min=kpi["oldest_pending_age_min"],
         )
         _update_state(db_errors=db_errors, llm_errors=llm_errors, tg_errors=tg_errors)
 
@@ -304,6 +378,7 @@ def run_agentic_with_legacy_fallback() -> None:
             e,
             exc_info=True,
         )
+        send_admin_alert(f"🚨 <b>AGENTIC_FAIL_FALLBACK</b>\n{e!s}")
         run_legacy_pipeline()
 
 

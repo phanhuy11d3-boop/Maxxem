@@ -73,24 +73,23 @@ def main() -> None:
 
     print()
     print("=" * 72)
-    print("STEP 2 — Triage 8B")
+    print("STEP 2 — Triage 8B (id-keyed dict, anti-miss)")
     print("=" * 72)
-    triage = triage_articles(chunk, client)
-    print(f"  triage_results = {triage}")
-
-    high = [chunk[i] for i in range(min(len(triage), len(chunk))) if triage[i]]
-    high += chunk[len(triage):]
-    print(f"  high_impact = {len(high)} bai")
+    triage_map = triage_articles(chunk, client)
+    print(f"  triage_map size = {len(triage_map)}")
+    high = [a for a in chunk if triage_map.get(a.id, True)]
+    print(f"  high_impact = {len(high)} bai (anti-miss policy)")
 
     if not high:
         print("Triage loai het. KHONG co gi de gui."); return
 
     print()
     print("=" * 72)
-    print("STEP 3 — Analyze batch 70B")
+    print("STEP 3 — Analyze batch 70B (BatchOutcome + missing list)")
     print("=" * 72)
-    success = analyze_articles_batch(high, client)
-    print(f"  analyze success = {success}")
+    outcome, missing = analyze_articles_batch(high, client)
+    print(f"  outcome = {outcome} | missing = {len(missing)}/{len(high)}")
+    success = outcome == "ok"
 
     print()
     print("=" * 72)

@@ -1,57 +1,68 @@
-# Guardrails: Operational Constraints (v2 — Python Pipeline)
+# Guardrails — ràng buộc vận hành & nội dung
 
-> Các quy tắc này được **enforce trong code** qua các hằng `TRIAGE_PROMPT` và `SYSTEM_PROMPT_BATCH`
-> trong [`processors/insight_extractor.py`](../processors/insight_extractor.py), cùng logic lọc trong
-> [`utils/notifier.py`](../utils/notifier.py). Không liên quan đến ElizaOS hay Twitter API.
+Được enforce chính qua các hằng **`TRIAGE_PROMPT`**, **`SYSTEM_PROMPT_BATCH`** trong [`processors/insight_extractor.py`](../processors/insight_extractor.py), logic **`main.py`**, và format [`models/article.py`](../models/article.py). Không dùng ElizaOS trong pipeline Python.
 
 ---
 
-## 1. Zero Hallucination (Tuyệt đối không ảo giác)
+## 1. Không hallucination số liệu
 
-**Áp dụng tại:** `processors/insight_extractor.py`
-
-LLM chỉ được phân tích dựa trên `title` và `summary` của bài báo gốc.
-Không được suy diễn, bịa số liệu, hay thêm thông tin ngoài văn bản đầu vào.
-
-Nếu thông tin không đủ để kết luận → `market_impact = "neutral"`, không được đoán mò.
+- LLM chỉ phân tích từ `title` và `summary` đã ingest.
+- Thiếu dữ liệu → **`market_impact: neutral`**, không bịa mới.
 
 ---
 
-## 2. No Overhype (Không phóng đại)
+## 2. No overhype (từ cấm & takeaway)
 
-**Áp dụng tại:** System Prompt của Groq LLM
-
-Từ bị cấm trong `key_takeaway`: "revolutionary", "game-changer", "groundbreaking",
-"massive", "huge", "moon", "explode", "skyrocket".
-
-`key_takeaway` phải chứa ít nhất 1 con số cụ thể (%, $, số lượng) từ bài báo gốc.
-Không có số liệu → LLM phải viết lại câu mà không phóng đại.
+Key takeaway: không dùng *revolutionary, game-changer, moon*, … như trong system prompt.
 
 ---
 
-## 3. Noise Reduction (Giảm nhiễu)
+## 3. Recall-first vs “neutral drop”
 
-**Áp dụng tại:** `utils/notifier.py`
-
-Chỉ gửi Telegram khi `market_impact` là `"bullish"` hoặc `"bearish"`.
-`"neutral"` bị bỏ qua hoàn toàn. Đây là **tính năng**, không phải lỗi.
-
-Lý do: Người dùng nhận Telegram để hành động, không phải để đọc tin trung lập.
+- **Telegram chỉ nhận bài directional:** `bullish` / `bearish` (`Article.is_actionable`).
+- **`neutral`** sau 70B: **không** enqueue Telegram — không phải bug, là “không có tín hiệu hướng giá”.
+- **Triage Tier-2:** bài bị đánh giá low-impact vẫn vào batch 70B với **`low_confidence`** (anti-miss).
+- LLM batch **thiếu id**: đóng **`processed`** + **`low_confidence`** + neutral auto-close (không tăng `retry_count`).
 
 ---
 
-## 4. Data Integrity (Toàn vẹn dữ liệu)
+## 4. Toàn vẹn dữ liệu scrape
 
-**Áp dụng tại:** `models/article.py` (Pydantic)
+[`models/article.py`](../models/article.py): title/url/source/published_at không hợp lệ → reject trước DB.
 
-Bài báo thiếu `title`, `url`, hoặc `published_at` → bị loại bỏ trước khi vào DB.
-Không có ngoại lệ. Dữ liệu bẩn không được phép đi sâu vào pipeline.
+Meta thời gian:
+
+- **`published_from_source`**: báo Telegram có hay không dòng `Source time (ICT)` — nếu RSS không có timestamp, scraper set `FALSE` và ẩn dòng đó.
 
 ---
 
-## 5. Deduplication (Chống trùng lặp)
+## 5. Dedup
 
-**Áp dụng tại:** `storage/postgres.py` (PostgreSQL Supabase duy nhất — dedup không qua DB file cục bộ.)
+[`storage/postgres.py`](../storage/postgres.py): `id = SHA-256(URL đã sanitize)`; `ON CONFLICT DO NOTHING`. Story-level dedup (trùng nội dung khác URL) không có trong lõi hiện tại.
 
-Mỗi bài báo có ID = SHA-256(sanitized URL). `ON CONFLICT (id) DO NOTHING`.
-Cùng một URL sau khi bỏ query/trailing slash → chỉ lưu 1 lần. Nếu nhiều nguồn đăng lại cùng một nội dung bằng URL khác nhau, runtime hiện tại chưa làm story-level dedup; muốn chặn lớp đó cần thêm fingerprint theo title/source/time.
+---
+
+## 6. Anti-stale & trust
+
+**30 phút** từ `published_at` / `scraped_at`:
+
+- không đưa vào queue AI đã có `processed=FALSE` quá hạn (`get_unprocessed`);
+- actionable chưa gửi kịp được **`expired`** — không ép gửi tin trading “quá cửa”.
+
+---
+
+## 7. Telemetry & SLA
+
+- **Lag** được hiển thị trong mỗi tin (ICT khi có nguồn).
+- `utils/notifier.py`: **`SLA_SECONDS` (120)** — cảnh báo qua admin khi vượt (telemetry phải bật).
+- Heartbeat chứa KPI outbox; tắt bằng `ENABLE_OPS_TELEMETRY`.
+
+---
+
+## Sync tài liệu
+
+Đổi prompt hoặc contract JSON → cập nhật song song:
+
+1. Prompts trong `insight_extractor.py`
+2. [`.claude/skills/insight-extractor/reference.md`](../.claude/skills/insight-extractor/reference.md)
+3. `Article` fields + Postgres columns nếu thêm cờ mới (`low_confidence` đã có cột DB).

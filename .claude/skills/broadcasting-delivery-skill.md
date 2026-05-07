@@ -1,39 +1,70 @@
 # Skill: High-Engagement Broadcasting (Broadcaster)
 
-> **Mục tiêu:** Biến Telegram thành kênh signal cao cấp. Tin nhắn phải Đẹp - Đủ - Đúng.
+> **Mục tiêu:** Telegram là kênh **signal** — đủ thông tin, đúng format HTML, hiển thị **lag** làm KPI sống.
 
-## 1. Visual Hierarchy (Cấu trúc bản tin)
+Tham chiếu code thật: `models/article.py::format_telegram_html` + `utils/notifier.py::send_telegram`.
 
-**Header Line:**
-```
-[urgency_prefix] [impact_emoji] BULLISH/BEARISH | Source
-```
-- `urgency = breaking`  → tiền tố: `🔴 BREAKING |`
-- `urgency = important` → tiền tố: `⚡ IMPORTANT |`
-- `urgency = context`   → không có tiền tố
+---
 
-**Meta Line (ngay dưới header):**
+## 1. Visual hierarchy (HTML / parse_mode HTML)
+
+**Header (có urgency + low confidence):**
+
+```text
+[🔴 BREAKING |] [📈/📉] [?] BULLISH | Source
 ```
-🏷 <narrative_tag>  🪙 $TOKEN1 $TOKEN2
+
+- `urgency = breaking|important` → tiền tố như trong code.
+- **`[?]`** + dòng **`Confidence: [?] low`** khi `article.low_confidence` (persist DB — dispatch phải đọc được).
+
+**Meta (optional):**
+
+```text
+🏷 <narrative_tag>   🪙 $BTC $ETH
 ```
-- `narrative_tag` hiển thị nếu khác `Other`.
-- `affected_tokens` format: `$SYMBOL` mỗi token.
+
+**Title:** plain, đã escape HTML.
+
+**Thời gian (ICT) — chỉ khi `published_from_source`:**
+```text
+⏱ Source time (ICT): HH:MM - dd/mm/yyyy | Sent: HH:MM | Lag: Xm
+```
+Nếu thời gian nguồn là fallback không tin cậy → ẩn block (field `published_from_source=False`).
 
 **Body:**
-- Tiêu đề bài báo (plain text, HTML-escaped).
-- `Sentiment: +0.75` (số thực từ LLM).
-- `Key: "<key_takeaway>"` — in nghiêng.
+
+- `Sentiment: ±0.xx`
+- `Key: "..."` (italic)
 
 **Footer:**
-- `🔗 Source link` (hyperlink HTML).
-- `⚠️ AI-generated insight. Verify data before trading.`
 
-## 2. Phân tầng kênh (Free vs. Premium)
-- **Free channel** (`CHAT_ID`): gửi tất cả bài `is_actionable` (bullish + bearish).
-- **Premium channel** (`PREMIUM_CHAT_ID`): gửi thêm full signal gồm `key_takeaway`, `affected_tokens`, `urgency`.
-- Nếu `PREMIUM_CHAT_ID` không được cấu hình → chỉ gửi free channel, không báo lỗi.
+- Hyperlink **Source link**
+- `⚠️ AI-generated insight...`
 
-## 3. Delivery Logic (FinOps & Rate Limit)
-- Kiểm tra `is_actionable` trước khi gửi (chỉ gửi Bullish/Bearish, lọc Neutral).
-- Khoảng cách giữa các tin nhắn: 2 giây (tuân thủ Telegram rate limit ~20 msg/min per bot).
-- Tham chiếu schema output: `.claude/skills/insight-extractor/reference.md`.
+---
+
+## 2. Kênh Free vs Premium
+
+- **Free (`CHAT_ID`):** `format_telegram_html` như trên — mọi `is_actionable`.
+- **Premium (`PREMIUM_CHAT_ID`):** thêm khối signal cho `breaking`/`important` qua `_build_premium_message` (không được fail silently che free channel).
+
+---
+
+## 3. Delivery & outbox (trading-grade)
+
+- **Không** tự giới hạn “tối đa 20 tin mỗi batch” ở lớp broadcast — đó là kích thước **LLM batch**, không phải cap sản phẩm.
+- Gửi thực tế qua **`_dispatch_tg_queue`**: chỉ các row `tg_status in (pending, failed)` chưa `expired`, chưa vượt `tg_attempts` max — xem [`docs/architecture.md`](../../../../docs/architecture.md).
+- Tin **`tg_status=expired`** hoặc ngoài cửa sổ stale: **không** gửi (anti-stale).
+
+---
+
+## 4. SLA & Telegram API
+
+- Mỗi lần gửi được đo lag; notifier có thể `send_admin_alert` khi SLA nội bộ breached (**chỉ khi** ops telemetry & admin chat valid).
+- **Không** thêm delay cố định giữa tin chỉ để “làm yên feed” trong code production — burst là kỳ vọng khi volatility.
+
+---
+
+## 5. Schema LLM output
+
+Đồng bộ với [`.claude/skills/insight-extractor/reference.md`](reference.md).

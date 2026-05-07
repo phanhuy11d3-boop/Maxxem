@@ -1,22 +1,29 @@
-# CryptoSentinel — The AI Operating System (v4.0)
+# CryptoSentinel — manual cho AI / operator (AIOS-lite)
 
-> [!IMPORTANT]
-> Hệ thống có lớp **AIOS playbook** và runtime agentic opt-in. Production mặc định vẫn là pipeline tuyến tính ổn định; chỉ chạy agentic khi gọi `python main.py --agentic`, và có fallback về legacy.
+Hệ thống có playbook `.claude/` (agents + skills) cho mô tả vai trò; **production mặc định** là `main.py` legacy. Chỉ agentic khi gọi `--agentic` (có fallback legacy).
 
-## 📍 Kiến trúc AIOS (4 Pillars)
-1. **Context**: `.claude/agents/` (Brains) & `.claude/skills/` (Expertise).
-2. **Connections**: `scrapers/`, `storage/`, `utils/` (Python Tools).
-3. **Capabilities**: Tập hợp các Skills định nghĩa quy trình chuẩn (SOPs).
-4. **Cadence**: GitHub Actions & `storage/state.json` (Vòng lặp tự động).
+## Nguyên tắc vận hành (chốt ý)
 
-## 📍 Lệnh vận hành (OS Commands)
-- **Default Run**: `python main.py` (Pipeline tuyến tính ổn định)
-- **Legacy Run**: `python main.py --legacy` (Ép pipeline tuyến tính)
-- **Agentic Runtime**: `python main.py --agentic` (Scout → Analyst → Auditor → Broadcaster, có fallback legacy)
-- **Unit Tests**: `pytest tests/unit`
-- **System Audit**: `python scripts/audit_agent.py`
+1. **Cadence 1 phút** — không downgrade về cron giờ trong production.
+2. **Stale 30 phút** — tin cũ không gửi Telegram; AI queue cũng không xử lý.
+3. **Recall-first** — ưu tiên gửi có nhãn **`[?]` / low confidence** hơn là bỏ sót; Tier-1 không bị triage 8B làm im lặng.
+4. **Outbox Telegram** — `tg_status` (`pending` / `sent` / `failed` / `expired`); atomic `mark_processed_with_tg`.
+5. **Telemetry** — heartbeat / admin chỉ khi **`ENABLE_OPS_TELEMETRY`** bật; **không** trùng `CHAT_ID`.
+6. **`low_confidence` lưu DB** — dispatch queue đọc lại để format Telegram không mất nhãn.
 
-## 📍 Cấu trúc thư mục AIOS
-- `.claude/agents/`: Định nghĩa cá tính và quyền hạn của các Agent.
-- `.claude/skills/`: Chứa các bộ kỹ năng (SOPs) chi tiết.
-- `storage/state.json`: Lưu trữ trạng thái hệ thống và bộ nhớ ngắn hạn.
+Chi tiết: [`docs/architecture.md`](docs/architecture.md).
+
+## Lệnh
+
+| Mục đích | Lệnh |
+|---|---|
+| Pipeline mặc định | `python main.py` hoặc `py -3 main.py` (Windows) |
+| Ép legacy | `python main.py --legacy` |
+| Agentic | `python main.py --agentic` |
+| Unit tests | `pytest tests/unit` hoặc `py -3 -m pytest tests/unit` |
+
+## Cấu trúc playbook
+
+- `.claude/agents/` — Scout / Analyst / Auditor / Broadcaster / Orchestrator (hướng dẫn vai trò).
+- `.claude/skills/` — SOP ingestion / insight / audit / broadcast.
+- **`storage/state.json`** — snapshot metadata cuối run; **state tin thật nằm Postgres**.

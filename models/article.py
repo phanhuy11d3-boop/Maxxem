@@ -15,7 +15,7 @@ import hashlib
 import html
 import re
 from urllib.parse import urlparse, urlunparse
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from enum import Enum
 from typing import List, Optional
 
@@ -152,6 +152,14 @@ class Article(BaseModel):
         default=None,
         description="Mức khẩn cấp: breaking | important | context",
     )
+    low_confidence: bool = Field(
+        default=False,
+        description="True nếu đây là tín hiệu ngưỡng thấp (gắn nhãn [?] cho user tự đánh giá).",
+    )
+    published_from_source: bool = Field(
+        default=True,
+        description="True nếu published_at lấy được trực tiếp từ RSS source; False nếu fallback.",
+    )
 
     # --- Nhóm 4: Metadata hệ thống ---
     scraped_at: datetime = Field(
@@ -246,11 +254,17 @@ class Article(BaseModel):
 
         return "\n".join(lines)
 
-    def format_telegram_html(self) -> str:
+    def format_telegram_html(self, sent_at: Optional[datetime] = None) -> str:
         """
         Định dạng gửi Telegram với ``parse_mode: HTML``.
         Escape toàn bộ tiêu đề / takeaway / URL để không bị RSS phá markup (Markdown legacy dễ vỡ vì ``_``, ``*``).
         """
+        sent_at = sent_at or datetime.now(timezone.utc)
+        tz_ict = timezone(timedelta(hours=7))
+        pub_ict = self.published_at.astimezone(tz_ict)
+        sent_ict = sent_at.astimezone(tz_ict)
+        lag_minutes = max(0, int((sent_at - self.published_at).total_seconds() // 60))
+
         impact_emoji = "📈" if self.market_impact == MarketImpact.BULLISH else "📉"
         label = html.escape(self.market_impact.value.upper() if self.market_impact else "N/A")
         source_esc = html.escape(self.source.strip())
@@ -267,9 +281,8 @@ class Article(BaseModel):
             "important": "⚡ <b>IMPORTANT</b> | ",
         }.get(self.urgency or "context", "")
 
-        lines = [
-            f"{urgency_prefix}{impact_emoji} <b>{label}</b> | {source_esc}",
-        ]
+        conf_prefix = "[?] " if self.low_confidence else ""
+        lines = [f"{urgency_prefix}{impact_emoji} <b>{conf_prefix}{label}</b> | {source_esc}"]
 
         # Narrative badge + affected tokens (dòng phụ ngay dưới header)
         meta_parts = []
@@ -281,7 +294,15 @@ class Article(BaseModel):
         if meta_parts:
             lines.append("  ".join(meta_parts))
 
-        lines.extend(["", title_esc, "", f"Sentiment: {sentiment_str}"])
+        lines.extend(["", title_esc])
+        if self.published_from_source:
+            lines.append(
+                f"⏱ Source time (ICT): {pub_ict.strftime('%H:%M - %d/%m/%Y')} | "
+                f"Sent: {sent_ict.strftime('%H:%M')} | Lag: {lag_minutes}m"
+            )
+        lines.extend(["", f"Sentiment: {sentiment_str}"])
+        if self.low_confidence:
+            lines.append("Confidence: [?] low")
 
         if self.key_takeaway:
             kt = html.escape(self.key_takeaway)

@@ -103,7 +103,7 @@ Impact multipliers:
 - Các gap khác: `1x`
 
 Chọn top 3 gap có leverage cao nhất. Mỗi gap phải có một bước sửa cụ thể, ví dụ:
-- "Thêm workflow trong `.github/workflows/scraper.yml` để chạy `python main.py --legacy` theo lịch."
+- "Đảm bảo cron trong `.github/workflows/scraper.yml` là mỗi phút (`* * * * *`), không chỉ hourly."
 - "Bổ sung env contract vào `.env.example` cho Telegram/LLM/Postgres."
 - "Mở rộng `scripts/audit_agent.py` để kiểm tra source config và notifier path."
 

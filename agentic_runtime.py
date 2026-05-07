@@ -19,23 +19,31 @@ from typing import Dict, List
 
 from models.article import Article, MarketImpact
 from processors.insight_extractor import (
+    BatchOutcome,
     analyze_articles_batch,
     get_groq_client,
     triage_articles,
 )
 from scrapers.generic_rss import scrape_all_feeds
 from storage.postgres import (
-    get_tg_failed,
+    expire_stale_tg_queue,
+    get_tg_dispatch_queue,
     get_unprocessed,
     increment_retry,
     init_db,
-    mark_processed,
-    mark_tg_sent,
+    mark_processed_with_tg,
+    mark_tg_attempt,
     upsert_article,
 )
-from utils.notifier import send_telegram
+from utils.notifier import send_admin_alert, send_telegram
 
 logger = logging.getLogger(__name__)
+LOW_CONF_SENTIMENT_ABS_THRESHOLD = 0.25
+FAST_SIGNAL_SOURCES = {"Watcher.Guru", "Lookonchain", "UnusualWhales", "Arkham Alerts"}
+TIER1_SOURCES = {
+    "Blockworks", "CoinDesk", "Cointelegraph", "Unchained Crypto",
+    *FAST_SIGNAL_SOURCES,
+}
 
 DEFAULT_AGENT_SKILL_MAP = {
     "scout": "scout-ingestion-skill",
@@ -96,6 +104,12 @@ def _stage_scout(ctx: RuntimeContext, stats: PipelineStats) -> None:
 def _stage_analyst(ctx: RuntimeContext, stats: PipelineStats, max_batch_size: int) -> None:
     logger.info("[Analyst] Lấy queue chưa xử lý...")
     unprocessed = get_unprocessed()
+    unprocessed.sort(
+        key=lambda a: (
+            0 if a.source in TIER1_SOURCES else 1,
+            -a.scraped_at.timestamp(),
+        )
+    )
     total_unprocessed = len(unprocessed)
     if total_unprocessed == 0:
         logger.info("[Analyst] Không có bài cần phân tích.")
@@ -116,56 +130,87 @@ def _stage_analyst(ctx: RuntimeContext, stats: PipelineStats, max_batch_size: in
         chunk = unprocessed[chunk_start : chunk_start + max_batch_size]
         logger.info("[Analyst] Chunk %s/%s (%s bài)", idx, num_chunks, len(chunk))
 
-        triage_results = triage_articles(chunk, client)
-        n_triage = min(len(triage_results), len(chunk))
+        tier1 = [a for a in chunk if a.source in TIER1_SOURCES]
+        tier2 = [a for a in chunk if a.source not in TIER1_SOURCES]
+        low_conf_ids: set[str] = set()
+        high_impact: List[Article] = list(tier1)
 
-        high_impact: List[Article] = []
-        for i in range(n_triage):
-            article = chunk[i]
-            if triage_results[i]:
+        if tier2:
+            triage_map = triage_articles(tier2, client)
+            for article in tier2:
                 high_impact.append(article)
-            else:
-                mark_processed(
-                    article.id,
-                    0.0,
-                    MarketImpact.NEUTRAL,
-                    "Routine news - skipped deep analysis.",
-                )
-                stats.ai_processed += 1
-
-        # Fallback: thiếu nhãn triage thì vẫn cho qua phân tích
-        for i in range(n_triage, len(chunk)):
-            high_impact.append(chunk[i])
+                if not triage_map.get(article.id, True):
+                    low_conf_ids.add(article.id)
 
         if not high_impact:
             continue
 
-        success = analyze_articles_batch(high_impact, client)
-        if not success:
+        outcome, missing = analyze_articles_batch(high_impact, client)
+
+        if outcome == BatchOutcome.STRUCTURAL_FAIL:
             stats.llm_errors += len(high_impact)
+            send_admin_alert(
+                "🚨 <b>LLM_STRUCTURAL_FAIL</b>\n"
+                f"[Agentic] Chunk size={len(high_impact)}. Prompt cần xem lại."
+            )
+            continue
+
+        if outcome == BatchOutcome.TRANSIENT_FAIL:
+            stats.llm_errors += len(high_impact)
+            send_admin_alert(
+                f"⚠️ <b>LLM_TRANSIENT_FAIL</b>\n[Agentic] Chunk size={len(high_impact)}"
+            )
             for article in high_impact:
                 increment_retry(article.id)
             continue
 
         for article in high_impact:
-            if not article.processed:
-                stats.llm_errors += 1
-                increment_retry(article.id)
-                continue
-
-            mark_processed(
-                article_id=article.id,
-                sentiment=article.sentiment,
-                market_impact=article.market_impact or MarketImpact.NEUTRAL,
-                key_takeaway=article.key_takeaway,
-                narrative_tag=article.narrative_tag,
-                affected_tokens=article.affected_tokens,
-                urgency=article.urgency,
+            article.low_confidence = bool(getattr(article, "low_confidence", False)) or (
+                article.id in low_conf_ids
+                or (
+                    article.sentiment is not None
+                    and abs(article.sentiment) < LOW_CONF_SENTIMENT_ABS_THRESHOLD
+                )
             )
+
+            # Outbox state machine:
+            # - actionable -> enqueue pending (tg_status='pending', attempts=0)
+            # - neutral    -> no tg state
+            if article.is_actionable:
+                mark_processed_with_tg(
+                    article_id=article.id,
+                    sentiment=article.sentiment,
+                    market_impact=article.market_impact or MarketImpact.NEUTRAL,
+                    key_takeaway=article.key_takeaway,
+                    narrative_tag=article.narrative_tag,
+                    affected_tokens=article.affected_tokens,
+                    urgency=article.urgency,
+                    low_confidence=article.low_confidence,
+                    tg_sent=None,
+                    tg_status="pending",
+                    tg_attempts=0,
+                )
+                ctx.push_actionable(article)
+            else:
+                mark_processed_with_tg(
+                    article_id=article.id,
+                    sentiment=article.sentiment,
+                    market_impact=article.market_impact or MarketImpact.NEUTRAL,
+                    key_takeaway=article.key_takeaway,
+                    narrative_tag=article.narrative_tag,
+                    affected_tokens=article.affected_tokens,
+                    urgency=article.urgency,
+                    low_confidence=article.low_confidence,
+                    tg_sent=None,
+                    tg_status=None,
+                )
             stats.ai_processed += 1
 
-            if article.is_actionable:
-                ctx.push_actionable(article)
+        if missing:
+            send_admin_alert(
+                f"⚠️ <b>LLM_MISSING_RESULTS</b>\n[Agentic] {len(missing)}/"
+                f"{len(high_impact)} bị 70B bỏ quên — đã đóng low_conf."
+            )
 
     logger.info("[Analyst] AI processed=%s | Actionable=%s", stats.ai_processed, len(ctx.actionable_articles))
 
@@ -190,12 +235,18 @@ def _stage_auditor(ctx: RuntimeContext, stats: PipelineStats) -> None:
 
 
 def _stage_broadcaster(ctx: RuntimeContext, stats: PipelineStats) -> None:
-    logger.info("[Broadcaster] Retry các bài TG cần (re)gửi từ trước...")
-    failed_articles = get_tg_failed()
+    logger.info("[Broadcaster] Dispatch queue pending/failed trong cửa sổ 30 phút...")
+    expired = expire_stale_tg_queue(max_age_minutes=30)
+    if expired:
+        send_admin_alert(f"⏭️ <b>TG_EXPIRED</b>\n[Agentic] expired stale: {expired}")
+
+    failed_articles = get_tg_dispatch_queue(max_age_minutes=30, max_attempts=3)
+    seen_ids = set()
     for article in failed_articles:
+        seen_ids.add(article.id)
         stats.actionable += 1
         sent = send_telegram(article)
-        mark_tg_sent(article.id, sent)
+        mark_tg_attempt(article.id, sent, None if sent else "send_failed")
         if sent:
             stats.tg_sent_ok += 1
         else:
@@ -203,9 +254,12 @@ def _stage_broadcaster(ctx: RuntimeContext, stats: PipelineStats) -> None:
 
     logger.info("[Broadcaster] Gửi các actionable mới từ analyst...")
     for article in ctx.actionable_articles:
+        if article.id in seen_ids:
+            # Đã được retry từ dispatch queue ở vòng trên — tránh gửi double.
+            continue
         stats.actionable += 1
         sent = send_telegram(article)
-        mark_tg_sent(article.id, sent)
+        mark_tg_attempt(article.id, sent, None if sent else "send_failed")
         if sent:
             stats.tg_sent_ok += 1
         else:

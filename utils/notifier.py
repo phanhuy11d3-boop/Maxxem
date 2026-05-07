@@ -7,14 +7,29 @@ Chịu trách nhiệm gửi tín hiệu (Bullish/Bearish) tới Telegram.
 
 import os
 import html
-import time
 import logging
 import requests
+from datetime import datetime, timezone
 from typing import Optional
 
 from models.article import Article
 
 logger = logging.getLogger(__name__)
+SLA_SECONDS = 120
+
+
+def _is_main_channel(chat_id: str) -> bool:
+    main_chat_id = (os.environ.get("CHAT_ID") or "").strip()
+    return bool(chat_id and main_chat_id and chat_id == main_chat_id)
+
+
+def _ops_telemetry_enabled() -> bool:
+    """
+    Cờ bật/tắt telemetry vận hành (admin alert + heartbeat).
+    Mặc định tắt để giữ kênh Telegram sạch khi cần quan sát thuần signal.
+    """
+    raw = (os.environ.get("ENABLE_OPS_TELEMETRY") or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
 
 def _post_to_telegram(
     token: str,
@@ -66,6 +81,35 @@ def _build_premium_message(article: Article) -> str:
     return base
 
 
+def _reference_ts(article: Article) -> datetime:
+    """Ưu tiên published_at; fallback scraped_at nếu dữ liệu published lỗi."""
+    try:
+        if article.published_at and article.published_at.tzinfo is not None:
+            return article.published_at
+    except Exception:
+        pass
+    return article.scraped_at
+
+
+def _lag_seconds(article: Article, sent_at: datetime) -> int:
+    ref = _reference_ts(article)
+    return max(0, int((sent_at - ref).total_seconds()))
+
+
+def send_admin_alert(text: str) -> bool:
+    """Gửi alert lỗi/chậm về kênh admin-only (ADMIN_CHAT_ID)."""
+    if not _ops_telemetry_enabled():
+        return False
+    token = os.environ.get("BOT_TOKEN")
+    admin_chat_id = os.environ.get("ADMIN_CHAT_ID", "").strip()
+    if not token or not admin_chat_id:
+        return False
+    if _is_main_channel(admin_chat_id):
+        logger.warning("ADMIN_CHAT_ID trùng CHAT_ID (kênh chính). Bỏ qua admin alert để tránh spam UI.")
+        return False
+    return _post_to_telegram(token, admin_chat_id, text, parse_mode="HTML")
+
+
 def send_telegram(article: Article) -> bool:
     """
     Gửi tin nhắn Telegram cho một bài báo.
@@ -82,21 +126,32 @@ def send_telegram(article: Article) -> bool:
 
     if not token or not chat_id:
         logger.error("CHƯA CẤU HÌNH BOT_TOKEN HOẶC CHAT_ID. Không thể gửi tin nhắn.")
+        send_admin_alert("🚨 <b>Pipeline alert</b>: thiếu BOT_TOKEN hoặc CHAT_ID, không thể gửi tín hiệu.")
         return False
 
-    message_text = article.format_telegram_html()
+    sent_at = datetime.now(timezone.utc)
+    lag_seconds = _lag_seconds(article, sent_at)
 
-    # FinOps Rate Limit: Ngăn chặn Telegram chặn bot nếu gửi quá nhanh
-    time.sleep(2)
+    message_text = article.format_telegram_html(sent_at=sent_at)
 
     success = _post_to_telegram(token, chat_id, message_text, parse_mode="HTML")
     if success:
         logger.info(f"✅ Đã gửi Telegram (free): {article.title[:40]}...")
+        if lag_seconds > SLA_SECONDS:
+            send_admin_alert(
+                f"⚠️ <b>SLA_BREACH</b>\n"
+                f"{html.escape(article.source)} | {html.escape(article.title[:120])}\n"
+                f"Lag={lag_seconds//60}m{lag_seconds%60:02d}s > SLA=2m"
+            )
+    else:
+        send_admin_alert(
+            f"🚨 <b>TG_SEND_FAIL</b>\n"
+            f"{html.escape(article.source)} | {html.escape(article.title[:120])}"
+        )
 
     # Kênh Premium — tuỳ chọn, không ảnh hưởng kết quả trả về của hàm này
     premium_chat_id = os.environ.get("PREMIUM_CHAT_ID", "").strip()
     if premium_chat_id and article.urgency in ("breaking", "important"):
-        time.sleep(1)
         premium_text = _build_premium_message(article)
         ok = _post_to_telegram(token, premium_chat_id, premium_text, parse_mode="HTML")
         if ok:
@@ -110,7 +165,9 @@ def send_telegram(article: Article) -> bool:
 def send_heartbeat(scraped: int, new: int, ai_processed: int,
                    db_errors: int, llm_errors: int, tg_errors: int,
                    duration_s: float,
-                   actionable: int = 0, tg_sent_ok: int = 0) -> bool:
+                   actionable: int = 0, tg_sent_ok: int = 0,
+                   pending_count: int = 0, failed_count: int = 0,
+                   expired_count_60m: int = 0, oldest_pending_age_min: float = 0.0) -> bool:
     """
     Gửi báo cáo tổng kết pipeline sau mỗi lần chạy.
     Cho phép USER biết pipeline đang sống hay chết mà không cần vào GitHub Actions.
@@ -125,12 +182,28 @@ def send_heartbeat(scraped: int, new: int, ai_processed: int,
     im lặng vì LLM gắn nhãn neutral hết. Thêm ``actionable``/``tg_sent_ok`` để
     USER nhìn 1 phát ra ngay trạng thái thật.
     """
-    token = os.environ.get("BOT_TOKEN")
-    chat_id = os.environ.get("CHAT_ID")
+    if not _ops_telemetry_enabled():
+        logger.info("Ops telemetry disabled: bỏ qua heartbeat Telegram.")
+        return True
 
-    if not token or not chat_id:
-        logger.warning("Không có BOT_TOKEN/CHAT_ID — bỏ qua heartbeat.")
+    token = os.environ.get("BOT_TOKEN")
+    # Không spam kênh cộng đồng. Heartbeat chỉ đi kênh riêng nếu có cấu hình.
+    # Ưu tiên HEARTBEAT_CHAT_ID, fallback ADMIN_CHAT_ID.
+    heartbeat_chat_id = os.environ.get("HEARTBEAT_CHAT_ID", "").strip()
+    chat_id = heartbeat_chat_id or os.environ.get("ADMIN_CHAT_ID", "").strip()
+
+    if not token:
+        logger.warning("Không có BOT_TOKEN — bỏ qua heartbeat.")
         return False
+    if not chat_id:
+        logger.info("Không cấu hình HEARTBEAT_CHAT_ID/ADMIN_CHAT_ID — heartbeat chỉ ghi log nội bộ.")
+        return True
+    if _is_main_channel(chat_id):
+        logger.warning(
+            "HEARTBEAT_CHAT_ID/ADMIN_CHAT_ID trùng CHAT_ID (kênh chính). "
+            "Bỏ qua heartbeat để giữ UI sạch."
+        )
+        return True
 
     total_errors = db_errors + llm_errors + tg_errors
     if total_errors > 0:
@@ -145,6 +218,9 @@ def send_heartbeat(scraped: int, new: int, ai_processed: int,
         f"<b>📊 CryptoSentinel Heartbeat</b> | {safe_status}\n"
         f"├ Scraped: {scraped} bài | Mới: {new}\n"
         f"├ AI processed: {ai_processed} | Actionable: {actionable} | TG sent: {tg_sent_ok}\n"
+        f"├ Outbox: pending={pending_count} | failed={failed_count} | "
+        f"expired(60m)={expired_count_60m}\n"
+        f"├ oldest_pending_age: {oldest_pending_age_min:.1f}m (cutoff 30m)\n"
         f"├ Errors — DB: {db_errors} | LLM: {llm_errors} | TG: {tg_errors}\n"
         f"└ Duration: {duration_s:.1f}s"
     )
@@ -152,6 +228,18 @@ def send_heartbeat(scraped: int, new: int, ai_processed: int,
     success = _post_to_telegram(token, chat_id, text, parse_mode="HTML")
     if success:
         logger.info("✅ Heartbeat gửi thành công.")
+    if total_errors > 0:
+        send_admin_alert(
+            f"🚨 <b>HEARTBEAT_ERRORS</b>\n"
+            f"DB={db_errors} | LLM={llm_errors} | TG={tg_errors}\n"
+            f"Duration={duration_s:.1f}s"
+        )
+    if oldest_pending_age_min >= 24:
+        send_admin_alert(
+            f"⚠️ <b>OUTBOX_RISK</b>\n"
+            f"oldest_pending_age={oldest_pending_age_min:.1f}m (cutoff 30m)\n"
+            f"pending={pending_count} failed={failed_count} expired(60m)={expired_count_60m}"
+        )
     return success
 
 # ===========================================================================

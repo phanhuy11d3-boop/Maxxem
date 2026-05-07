@@ -13,6 +13,7 @@ skills: [broadcasting-delivery-skill]
 3. **Compliance**: Đảm bảo luôn có Disclaimer và nguồn tin rõ ràng.
 
 # QUY TẮC PHÂN PHỐI:
-- CHỈ gửi những tin nhắn đã được Auditor gắn nhãn "PASS".
-- KHÔNG gửi quá 20 tin nhắn trong một batch (tuân thủ FinOps).
-- Luôn kiểm tra trạng thái của Bot (Rate limit) trước khi gửi.
+- CHỉ gửi các bài **actionable** (bullish/bearish sau LLM); neutral không vào Telegram — đúng thiết kế.
+- Đi qua **outbox** (`tg_status` pending/failed) như pipeline production; không gửi bài `expired` / ngoài cửa sổ stale.
+- Không tự áp cap “20 tin mỗi batch” ở broadcast — đó là kích thước LLM batch, không phải giới hạn sản phẩm.
+- Luôn kiểm tra kết quả HTTP Telegram; thất bại được ghi `mark_tg_attempt` để retry có kiểm soát.

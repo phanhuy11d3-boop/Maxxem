@@ -17,6 +17,7 @@ from pydantic import ValidationError
 import socket
 
 from models.article import Article
+from scrapers.fast_signals import fetch_fast_signals
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +72,7 @@ def scrape_feed(source: dict) -> List[Article]:
             
             # Xử lý published_at
             published_at = None
+            published_from_source = True
             if hasattr(entry, "published_parsed") and entry.published_parsed:
                 published_at = datetime.fromtimestamp(time.mktime(entry.published_parsed), timezone.utc)
             elif hasattr(entry, "published") and entry.published:
@@ -81,6 +83,7 @@ def scrape_feed(source: dict) -> List[Article]:
             
             if not published_at:
                 published_at = datetime.now(timezone.utc)
+                published_from_source = False
 
             summary = entry.get("summary", "")
             
@@ -90,7 +93,8 @@ def scrape_feed(source: dict) -> List[Article]:
                 title=title,
                 source=name,
                 published_at=published_at,
-                summary=summary
+                summary=summary,
+                published_from_source=published_from_source,
             )
             articles.append(article)
             
@@ -113,7 +117,13 @@ def scrape_all_feeds(config_path: str = "config/sources.yaml") -> List[Article]:
     for source in sources:
         articles = scrape_feed(source)
         all_articles.extend(articles)
-        
+
+    # Fast-signal APIs (optional): chỉ chạy khi có API keys, không làm fail pipeline.
+    try:
+        all_articles.extend(fetch_fast_signals())
+    except Exception as e:
+        logger.warning(f"Fast-signal ingestion skipped due to error: {e}")
+
     return all_articles
 
 # ===========================================================================

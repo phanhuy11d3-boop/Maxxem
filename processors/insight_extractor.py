@@ -3,20 +3,28 @@ processors/insight_extractor.py
 ===============================
 Mô-đun tương tác với Groq API.
 Tối ưu hóa Token FinOps: Tiered LLM (8B -> 70B) & Batch Processing.
+
+Trading-grade hardening (2026-05-07):
+  - Triage giờ trả Dict[id -> bool] thay vì List[bool] thuần →
+    chống hoán vị thứ tự khi LLM bóp méo (Vector 3a).
+  - Anti-miss: thiếu/sai >30% nhãn → coi tất cả là high_impact, không bỏ sót.
+  - Batch analysis phân biệt transient (rate-limit/network) và structural
+    (JSON malformed) → chỉ retry transient (Vector 3c).
+  - Bài bị LLM "bỏ quên" trong response không bị retry-tax; được đánh dấu
+    processed=True + low_confidence để PM thấy nhưng không phá queue (Vector 3b).
 """
 
 import os
 import json
 import time
 import logging
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, List, Tuple
 
 from groq import Groq
 from models.article import Article, MarketImpact, normalize_market_impact
 
 logger = logging.getLogger(__name__)
 
-# --- CONFIG ---
 FAST_MODEL = "llama-3.1-8b-instant"
 POWER_MODEL = "llama-3.3-70b-versatile"
 
@@ -24,10 +32,28 @@ POWER_MODEL = "llama-3.3-70b-versatile"
 # suy ngược ra direction. Tránh trường hợp model nhả "neutral" + sentiment=0.7 vô lý.
 SENTIMENT_RESCUE_THRESHOLD = 0.4
 
-# --- PROMPTS (Optimized for tokens) ---
-TRIAGE_PROMPT = """Act as a crypto news filter. 
-Decide if each news title is 'high_impact' (market moving, hacks, major funding, regulatory) or 'low_impact' (routine, fluff, PR).
-Return JSON: {"results": [true, false, ...]} matching the input order."""
+# Anti-miss: nếu triage trả thiếu/sai > ngưỡng này thì coi như mọi bài đều high_impact.
+TRIAGE_ANTI_MISS_RATIO = 0.30
+
+# Batch analysis: số lần thử lại với lỗi transient (rate limit / network).
+ANALYZE_TRANSIENT_RETRIES = 1
+ANALYZE_TRANSIENT_BACKOFF_S = 2.0
+
+
+# --- PROMPTS ---
+TRIAGE_PROMPT = """You are a crypto news triage filter. Decide for each item whether it is
+"high_impact" (market moving — hacks, major funding>$25M, regulation, ETF, exchange events,
+liquidation cascades, macro/Fed, listing/delisting, exploit, mainnet launch, treasury moves)
+or "low_impact" (routine PR, opinion, fluff, off-topic news).
+
+ANTI-MISS RULE: when uncertain, prefer "high_impact". A false high_impact costs one extra LLM
+call; a false low_impact silences a real signal.
+
+INPUT FORMAT: a JSON array of objects, each {"idx": <int>, "title": "..."}.
+OUTPUT FORMAT (strict JSON, no prose):
+{"results": [{"idx": <same int>, "high_impact": true|false}, ...]}
+The "idx" MUST be copied byte-for-byte from input. Length of "results" MUST equal length
+of input. Do NOT shorten or paraphrase idx values."""
 
 SYSTEM_PROMPT_BATCH = """You are CryptoSentinel: skeptical, data-driven. Use ONLY title/summary provided.
 
@@ -52,6 +78,7 @@ Return ONE JSON object (no markdown, no prose), shape:
 {"results": [{"id": "...", "sentiment": 0.0, "market_impact": "neutral", "key_takeaway": "...", "narrative_tag": "Other", "affected_tokens": [], "urgency": "context"}]}
 Length of "results" MUST equal length of input."""
 
+
 def get_groq_client() -> Optional[Groq]:
     api_key = os.environ.get("GROQ_API_KEY")
     if not api_key:
@@ -59,121 +86,225 @@ def get_groq_client() -> Optional[Groq]:
         return None
     return Groq(api_key=api_key)
 
-def triage_articles(articles: List[Article], client: Groq) -> List[bool]:
-    """Tier 1: Dùng model 8B siêu rẻ để lọc tin rác theo Batch."""
-    if not articles: return []
-    
-    titles = [a.title for a in articles]
+
+# ===========================================================================
+# Vector 3a fix: Triage trả Dict[article_id -> bool], match theo idx có kiểm chứng
+# ===========================================================================
+
+def triage_articles(articles: List[Article], client: Groq) -> Dict[str, bool]:
+    """
+    Trả về dict {article.id: high_impact?}. Anti-miss:
+      - Bài LLM bỏ quên (idx không có trong response) → True (cho qua 70B).
+      - Nếu missing/invalid > TRIAGE_ANTI_MISS_RATIO của batch → coi cả batch là True.
+      - Nếu LLM throw exception → mọi bài True.
+    Caller chỉ cần `result.get(article.id, True)` — không cần dùng index.
+    """
+    if not articles:
+        return {}
+
+    items = [{"idx": i, "title": a.title} for i, a in enumerate(articles)]
+    fallback_all_true = {a.id: True for a in articles}
+
     try:
         response = client.chat.completions.create(
             messages=[
                 {"role": "system", "content": TRIAGE_PROMPT},
-                {"role": "user", "content": json.dumps(titles)}
+                {"role": "user", "content": json.dumps(items)},
             ],
             model=FAST_MODEL,
-            response_format={"type": "json_object"}
+            response_format={"type": "json_object"},
         )
         data = json.loads(response.choices[0].message.content)
-        return data.get("results", [True] * len(articles))
     except Exception as e:
-        logger.error(f"Triage error: {e}")
-        return [True] * len(articles) # Fallback: cho qua hết nếu lỗi
+        logger.error("Triage error → fallback anti-miss (all high_impact): %s", e)
+        return fallback_all_true
 
-def analyze_articles_batch(articles: List[Article], client: Groq) -> bool:
-    """Tier 2: Dùng model 70B xử lý Batch các tin quan trọng đã qua lọc."""
-    if not articles: return True
-    
-    # Chuẩn bị dữ liệu batch để gửi (giảm overhead token)
+    raw_results = data.get("results")
+    if not isinstance(raw_results, list):
+        logger.warning("Triage response không có 'results' list → anti-miss all True.")
+        return fallback_all_true
+
+    by_idx: Dict[int, bool] = {}
+    for r in raw_results:
+        if not isinstance(r, dict):
+            continue
+        try:
+            idx = int(r["idx"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if 0 <= idx < len(articles):
+            by_idx[idx] = bool(r.get("high_impact", True))
+
+    missing = sum(1 for i in range(len(articles)) if i not in by_idx)
+    if missing / max(1, len(articles)) > TRIAGE_ANTI_MISS_RATIO:
+        logger.warning(
+            "Triage missing %d/%d (>%.0f%%) → anti-miss: treat ALL as high_impact.",
+            missing, len(articles), TRIAGE_ANTI_MISS_RATIO * 100,
+        )
+        return fallback_all_true
+
+    return {a.id: by_idx.get(i, True) for i, a in enumerate(articles)}
+
+
+# ===========================================================================
+# Vector 3b + 3c fix: Batch analysis với phân biệt lỗi + per-article missing flag
+# ===========================================================================
+
+class _BatchOutcome:
+    """Kết quả phân tích batch để caller xử lý đúng từng loại lỗi."""
+    OK = "ok"
+    TRANSIENT_FAIL = "transient_fail"     # Rate limit / network → caller có thể retry
+    STRUCTURAL_FAIL = "structural_fail"   # JSON malformed / contract vi phạm → đừng tăng retry, alert admin
+
+
+def _classify_exception(exc: BaseException) -> str:
+    """Nhận diện lỗi transient (đáng retry) vs structural (vô ích nếu retry)."""
+    name = exc.__class__.__name__.lower()
+    msg = str(exc).lower()
+    if isinstance(exc, (json.JSONDecodeError, ValueError, TypeError, KeyError)):
+        return _BatchOutcome.STRUCTURAL_FAIL
+    if "rate" in msg or "429" in msg or "timeout" in msg or "connection" in msg or "network" in name:
+        return _BatchOutcome.TRANSIENT_FAIL
+    if "rate" in name or "timeout" in name or "apiconnection" in name:
+        return _BatchOutcome.TRANSIENT_FAIL
+    return _BatchOutcome.TRANSIENT_FAIL  # mặc định "đáng thử lại 1 lần" trừ khi rõ structural
+
+
+def analyze_articles_batch(articles: List[Article], client: Groq) -> Tuple[str, List[Article]]:
+    """
+    Phân tích batch bằng 70B.
+
+    Returns (outcome, missing_articles):
+      - outcome  : OK | TRANSIENT_FAIL | STRUCTURAL_FAIL
+      - missing  : danh sách bài LLM trả OK nhưng QUÊN không insight cho bài đó.
+                   Bài missing đã được set processed=True + low_confidence=True bởi hàm này
+                   để caller chỉ việc mark_processed mà KHÔNG tăng retry.
+    """
+    if not articles:
+        return _BatchOutcome.OK, []
+
     batch_input = [
         {"id": a.id, "title": a.title, "summary": (a.summary or "")[:500]}
         for a in articles
     ]
-    
-    try:
-        # FinOps: Delay để tránh rate limit nếu cần, nhưng batch giúp giảm số lần gọi
-        time.sleep(1)
-        
-        response = client.chat.completions.create(
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT_BATCH},
-                {"role": "user", "content": json.dumps(batch_input)}
-            ],
-            model=POWER_MODEL,
-            temperature=0.0,
-            response_format={"type": "json_object"}
-        )
-        
-        raw_content = response.choices[0].message.content
-        raw_data = json.loads(raw_content)
-        results = raw_data.get("results", [])
 
-        # Map kết quả lại vào object Article. Khớp theo id chuẩn; fallback theo
-        # vị trí (positional) nếu LLM bóp méo id — tránh queue stuck retry vĩnh viễn.
-        result_map = {res["id"]: res for res in results if isinstance(res, dict) and "id" in res}
-        positional_results = [r for r in results if isinstance(r, dict)]
+    last_exc: Optional[BaseException] = None
+    raw_content = ""
+    raw_data: dict = {}
 
-        rescue_count = 0
-        missing_count = 0
-        for idx, article in enumerate(articles):
-            res = result_map.get(article.id)
-            if res is None and idx < len(positional_results):
-                # Position-based fallback chỉ dùng khi LLM trả đúng số lượng
-                if len(positional_results) == len(articles):
-                    res = positional_results[idx]
-                    logger.warning(
-                        "ID mismatch cho article idx=%s (%s...), fallback positional. LLM id='%s'",
-                        idx, article.id[:12], res.get("id", "")[:24],
-                    )
-
-            if res is None:
-                missing_count += 1
-                logger.warning(
-                    "Batch response missing ID cho article id=%s title=%r",
-                    article.id[:12], (article.title or "")[:80],
-                )
-                continue
-
-            article.sentiment = float(res.get("sentiment", 0.0))
-            article.market_impact = normalize_market_impact(res.get("market_impact", "neutral"))
-            article.key_takeaway = str(res.get("key_takeaway", ""))[:300]
-            article.narrative_tag = str(res.get("narrative_tag", "Other"))
-            raw_tokens = res.get("affected_tokens", [])
-            article.affected_tokens = [str(t) for t in raw_tokens[:3]] if isinstance(raw_tokens, list) else []
-            article.urgency = str(res.get("urgency", "context"))
-
-            # Sentiment rescue: |sentiment| đủ mạnh nhưng impact bị NEUTRAL → suy ngược.
-            # Lý do tồn tại: prompt cấm "positive/negative" nhưng llama-3.3 vẫn nhả ra
-            # và normalize_market_impact đã xử lý. Đây là vành đai phòng thủ thứ hai cho
-            # case LLM trả "mixed"/"uncertain" + sentiment đậm.
-            if (
-                article.market_impact == MarketImpact.NEUTRAL
-                and article.sentiment is not None
-                and abs(article.sentiment) >= SENTIMENT_RESCUE_THRESHOLD
-            ):
-                rescued = MarketImpact.BULLISH if article.sentiment > 0 else MarketImpact.BEARISH
-                logger.info(
-                    "Sentiment rescue: id=%s sentiment=%+.2f -> %s (LLM said neutral)",
-                    article.id[:12], article.sentiment, rescued.value,
-                )
-                article.market_impact = rescued
-                rescue_count += 1
-
-            article.processed = True
-
-        if missing_count:
-            logger.warning(
-                "Batch missing %s/%s articles. Raw response head: %s",
-                missing_count, len(articles), raw_content[:400],
+    for attempt in range(ANALYZE_TRANSIENT_RETRIES + 1):
+        try:
+            response = client.chat.completions.create(
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT_BATCH},
+                    {"role": "user", "content": json.dumps(batch_input)},
+                ],
+                model=POWER_MODEL,
+                temperature=0.0,
+                response_format={"type": "json_object"},
             )
-        if rescue_count:
-            logger.info("Sentiment rescue cứu được %s/%s bài.", rescue_count, len(articles))
+            raw_content = response.choices[0].message.content or "{}"
+            raw_data = json.loads(raw_content)
+            break
+        except Exception as e:
+            last_exc = e
+            kind = _classify_exception(e)
+            logger.warning(
+                "Batch analyze attempt %d failed (%s): %s",
+                attempt + 1, kind, e,
+            )
+            if kind == _BatchOutcome.STRUCTURAL_FAIL:
+                # Structural error: retry vô ích trừ khi prompt thay đổi.
+                return _BatchOutcome.STRUCTURAL_FAIL, []
+            if attempt < ANALYZE_TRANSIENT_RETRIES:
+                time.sleep(ANALYZE_TRANSIENT_BACKOFF_S * (attempt + 1))
+                continue
+            return _BatchOutcome.TRANSIENT_FAIL, []
 
-        return True
-    except Exception as e:
-        logger.error(f"Batch analysis error: {e}")
-        return False
+    results = raw_data.get("results", []) if isinstance(raw_data, dict) else []
+    if not isinstance(results, list):
+        logger.error("Batch response 'results' không phải list. raw=%s", raw_content[:300])
+        return _BatchOutcome.STRUCTURAL_FAIL, []
 
-# Legacy support: keep original function but make it a wrapper or just leave it for small calls
+    result_map: Dict[str, dict] = {}
+    positional_results: List[dict] = []
+    for r in results:
+        if not isinstance(r, dict):
+            continue
+        positional_results.append(r)
+        rid = r.get("id")
+        if isinstance(rid, str) and rid:
+            result_map[rid] = r
+
+    rescue_count = 0
+    missing: List[Article] = []
+
+    for idx, article in enumerate(articles):
+        res = result_map.get(article.id)
+        if res is None and len(positional_results) == len(articles):
+            res = positional_results[idx]
+            logger.warning(
+                "Batch: ID mismatch idx=%d (db=%s) → fallback positional. LLM id=%r",
+                idx, article.id[:12], (res.get("id", "") if res else "")[:24],
+            )
+
+        if res is None:
+            # Vector 3b: KHÔNG tăng retry, đánh dấu processed + low_confidence để
+            # bài không kẹt vĩnh viễn trong queue. Caller sẽ mark_processed như bài
+            # neutral bình thường và admin nhận được warning qua heartbeat.
+            article.market_impact = MarketImpact.NEUTRAL
+            article.sentiment = 0.0
+            article.key_takeaway = "LLM did not return analysis (auto-closed)."
+            article.narrative_tag = "Other"
+            article.affected_tokens = []
+            article.urgency = "context"
+            article.low_confidence = True
+            article.processed = True
+            missing.append(article)
+            continue
+
+        try:
+            article.sentiment = float(res.get("sentiment", 0.0))
+        except (TypeError, ValueError):
+            article.sentiment = 0.0
+        article.market_impact = normalize_market_impact(res.get("market_impact", "neutral"))
+        article.key_takeaway = str(res.get("key_takeaway", ""))[:300]
+        article.narrative_tag = str(res.get("narrative_tag", "Other"))
+        raw_tokens = res.get("affected_tokens", [])
+        article.affected_tokens = [str(t) for t in raw_tokens[:3]] if isinstance(raw_tokens, list) else []
+        article.urgency = str(res.get("urgency", "context"))
+
+        if (
+            article.market_impact == MarketImpact.NEUTRAL
+            and article.sentiment is not None
+            and abs(article.sentiment) >= SENTIMENT_RESCUE_THRESHOLD
+        ):
+            rescued = MarketImpact.BULLISH if article.sentiment > 0 else MarketImpact.BEARISH
+            logger.info(
+                "Sentiment rescue: id=%s sentiment=%+.2f -> %s (LLM said neutral)",
+                article.id[:12], article.sentiment, rescued.value,
+            )
+            article.market_impact = rescued
+            rescue_count += 1
+
+        article.processed = True
+
+    if missing:
+        logger.warning(
+            "Batch missing %d/%d articles. Marked processed+low_confidence to avoid retry-tax.",
+            len(missing), len(articles),
+        )
+    if rescue_count:
+        logger.info("Sentiment rescue cứu được %d/%d bài.", rescue_count, len(articles))
+
+    return _BatchOutcome.OK, missing
+
+
 def analyze_article(article: Article, client: Groq) -> bool:
-    """Hỗ trợ luồng cũ bằng cách gọi batch size 1."""
-    return analyze_articles_batch([article], client)
+    """Hỗ trợ luồng cũ bằng cách gọi batch size 1; trả True nếu OK."""
+    outcome, _ = analyze_articles_batch([article], client)
+    return outcome == _BatchOutcome.OK
+
+
+# Public alias để caller import sạch hơn
+BatchOutcome = _BatchOutcome

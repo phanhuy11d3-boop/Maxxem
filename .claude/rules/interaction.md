@@ -9,7 +9,7 @@ Quy định cách các Agent cộng tác và xử lý bất đồng.
 
 ## 2. Cơ chế Thách thức (Challenge Protocol)
 - **Khi Auditor REJECT**: Orchestrator PHẢI yêu cầu Analyst giải thích logic phân tích.
-- Nếu Analyst bảo lưu quan điểm: Orchestrator sẽ gọi một "Tie-breaker" (dùng model mạnh nhất - ví dụ Llama 3.1 405B hoặc yêu cầu con người can thiệp).
+- Nếu Analyst bảo lưu quan điểm: không có model “405B tie-break” trong codebase — dùng re-prompt 70B/siết input, hoặc can thiệp manual; pipeline production là deterministic Python.
 
 ## 3. Quản lý lỗi (Error Handling)
 - Nếu một Agent không phản hồi sau 30s: Orchestrator sẽ thử lại với nhiệt độ (temperature) cao hơn (0.2 thay vì 0).

@@ -1,70 +1,83 @@
 # CryptoSentinel
 
-Hệ thống tin tức Crypto tự trị — thu thập, phân tích và phân phối tín hiệu thị trường.
+Thu thập tin crypto nhanh → phân tích Groq (8B triage + 70B batch) → phân phối Telegram **trading-grade**: cadence 1 phút, stale 30 phút, outbox Telegram, recall-first (nhãn `[?]` low confidence thay vì im lặng).
 
 ## Stack
 
 | Thành phần | Công nghệ |
 |---|---|
-| Ngôn ngữ | Python 3.11+ |
-| LLM | Groq API (Llama 3 8B/70B) |
-| Database | Supabase (PostgreSQL hosted) — chỉ [`storage/postgres.py`](storage/postgres.py); runtime không dùng engine DB cục bộ/file |
-| Scheduler | GitHub Actions (cron: 1h) |
-| Output | Telegram Bot |
-| Scraping | feedparser (RSS) |
+| Runtime | Python 3.11+ |
+| LLM | Groq (`llama-3.1-8b-instant`, `llama-3.3-70b-versatile`) |
+| DB | Supabase / PostgreSQL (`storage/postgres.py`, connection pool) |
+| Scheduler | GitHub Actions **`cron: * * * * *`** (mỗi phút) |
+| Output | Telegram Bot API |
+| Ingest | `feedparser` (RSS) + `scrapers/fast_signals.py` (API tùy chọn) |
 
-## Pipeline
+## Luồng tóm tắt
 
+```text
+Actions (1m) → main.py
+  → expire + dispatch TG backlog
+  → scrape (RSS + optional fast APIs)
+  → upsert / dedup Postgres
+  → LLM (tiered: Tier-1 skip triage; Tier-2 triage)
+  → mark_processed_with_tg → dispatch TG queue
+  → heartbeat (chỉ khi ENABLE_OPS_TELEMETRY bật)
 ```
-GitHub Actions (1h)
-  → main.py
-    → scrapers/generic_rss.py   (Lấy tin từ RSS)
-    → models/article.py         (Pydantic validate + Sanitize URL)
-    → storage/postgres.py       (Lưu Supabase + Dedup + Retry Cap)
-    → processors/insight_extractor.py  (Groq phân tích - Persona: CryptoSentinel)
-    → utils/notifier.py         (Telegram - Chỉ gửi Bullish/Bearish)
-```
 
-## Cấu trúc thư mục (Lean Architecture)
+## Cấu trúc thư mục (lõi)
 
-```
+```text
 crypto-sentinel/
-├── main.py                     # Nhạc trưởng điều phối
-├── agentic_runtime.py          # Runtime agentic opt-in, có fallback về legacy
-├── models/article.py           # Định nghĩa dữ liệu (Data Contract)
-├── scrapers/generic_rss.py     # Cào tin từ RSS
-├── processors/insight_extractor.py # AI Engine (Groq Llama 3)
-├── storage/postgres.py         # Database Engine (Supabase / psycopg2 pool)
-├── utils/notifier.py           # Gửi tin Telegram
-├── config/sources.yaml         # Danh sách nguồn RSS
+├── main.py
+├── agentic_runtime.py          # --agentic, fallback legacy
+├── models/article.py
+├── scrapers/generic_rss.py
+├── scrapers/fast_signals.py
+├── processors/insight_extractor.py
+├── storage/postgres.py
+├── utils/notifier.py
+├── config/sources.yaml
 ├── docs/
-│   └── monitor_agent.md        # Checklist giám sát (Monitor Agent)
-├── characters/sentinel.json    # Persona gốc (Reference)
-├── .github/workflows/scraper.yml # GitHub Actions Automation
-├── tests/unit/                 # Unit tests tối thiểu cho contract dữ liệu
-├── requirements.txt            # Thư viện cần cài
-├── MEMORY.md                   # Nhật ký sai sót & bài học của AI
-└── .env.example                # Mẫu các biến môi trường
+│   ├── architecture.md         # Kiến trúc + schema + outbox (SSOT kỹ thuật)
+│   ├── guardrails.md
+│   └── operations.md           # QA, smoke test, biến env
+├── .github/workflows/scraper.yml
+├── tests/unit/
+├── requirements.txt
+├── .env.example
+├── CLAUDE.md                   # Lệnh nhanh cho AI/agent playbook
+└── MEMORY.md
 ```
 
-## Biến môi trường cần thiết
+## Biến môi trường
 
-```
-DATABASE_URL=   # Supabase Connection String (URI)
-GROQ_API_KEY=   # Groq API key
-BOT_TOKEN=      # Telegram Bot token
-CHAT_ID=        # Telegram Chat/Channel ID
-PREMIUM_CHAT_ID= # Optional: Telegram premium channel
-```
+Xem **`.env.example`**. Tóm tắt:
+
+| Biến | Mô tả |
+|---|---|
+| `DATABASE_URL` | URI PostgreSQL Supabase |
+| `GROQ_API_KEY` | Groq |
+| `BOT_TOKEN` | Telegram bot |
+| `CHAT_ID` | Kênh/ group **signal** |
+| `PREMIUM_CHAT_ID` | Tùy chọn |
+| `UW_API_KEY`, `ARKHAM_API_KEY` | Tùy chọn (fast signals) |
+| `ADMIN_CHAT_ID`, `HEARTBEAT_CHAT_ID` | Ops alerts / heartbeat (telemetry) |
+| `ENABLE_OPS_TELEMETRY` | `0` tắt, `1`/true bật heartbeat + admin alert |
 
 ## CLI
 
-- `python main.py` — pipeline mặc định ổn định (RSS → Postgres → Groq → Telegram).
-- `python main.py --legacy` — tương đương mặc định, dùng khi muốn ép luồng tuyến tính.
-- `python main.py --agentic` — chạy runtime agentic có kiểm soát (`Scout → Analyst → Auditor → Broadcaster`) và tự fallback về legacy nếu lỗi nghiêm trọng.
+- **`py -3 main.py`** — Windows (Python Launcher).
+- **`python main.py`** — macOS/Linux/CI.
+- **`py -3 main.py --legacy`** — tương đương mặc định.
+- **`py -3 main.py --agentic`** — runtime agentic có fallback legacy.
+- **`py -3 -m pytest tests/unit`** — unit tests.
 
-## Tài liệu quan trọng
+Audit tĩnh DB (nếu có): `py -3 scripts/audit_agent.py`.
 
-- `implementation_plan.md` — Toàn bộ kế hoạch 6 Phase và logic chi tiết.
-- `docs/monitor_agent.md` — Quy tắc kiểm duyệt và Smoke Test.
-- `MEMORY.md` — Nơi AI lưu lại các bài học để không tái phạm sai lầm.
+## Tài liệu
+
+- [`docs/architecture.md`](docs/architecture.md) — pipeline, DB, LLM, tiers, file map.
+- [`docs/guardrails.md`](docs/guardrails.md) — guardrails nội dung & sản phẩm.
+- [`docs/operations.md`](docs/operations.md) — checklist vận hành & smoke test.
+- **`MEMORY.md`** — bài học lịch sử (AI).

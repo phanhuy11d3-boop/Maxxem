@@ -100,6 +100,7 @@ def init_db():
                     url TEXT NOT NULL,
                     source TEXT NOT NULL,
                     published_at TIMESTAMPTZ NOT NULL,
+                    published_from_source BOOLEAN DEFAULT TRUE,
                     summary TEXT,
                     sentiment REAL,
                     market_impact TEXT,
@@ -107,7 +108,13 @@ def init_db():
                     narrative_tag TEXT,
                     affected_tokens TEXT[],
                     urgency TEXT,
+                    low_confidence BOOLEAN DEFAULT FALSE,
                     tg_sent BOOLEAN DEFAULT NULL,
+                    tg_status TEXT DEFAULT NULL,
+                    tg_attempts INTEGER DEFAULT 0,
+                    tg_last_error TEXT,
+                    tg_last_attempt_at TIMESTAMPTZ,
+                    tg_sent_at TIMESTAMPTZ,
                     scraped_at TIMESTAMPTZ NOT NULL,
                     processed BOOLEAN DEFAULT FALSE,
                     retry_count INTEGER DEFAULT 0
@@ -118,8 +125,15 @@ def init_db():
                 "ALTER TABLE articles ADD COLUMN IF NOT EXISTS narrative_tag TEXT",
                 "ALTER TABLE articles ADD COLUMN IF NOT EXISTS affected_tokens TEXT[]",
                 "ALTER TABLE articles ADD COLUMN IF NOT EXISTS urgency TEXT",
+                "ALTER TABLE articles ADD COLUMN IF NOT EXISTS low_confidence BOOLEAN DEFAULT FALSE",
+                "ALTER TABLE articles ADD COLUMN IF NOT EXISTS published_from_source BOOLEAN DEFAULT TRUE",
                 # tg_sent: NULL=chưa cần gửi (neutral), TRUE=đã gửi OK, FALSE=fail cần retry
                 "ALTER TABLE articles ADD COLUMN IF NOT EXISTS tg_sent BOOLEAN DEFAULT NULL",
+                "ALTER TABLE articles ADD COLUMN IF NOT EXISTS tg_status TEXT DEFAULT NULL",
+                "ALTER TABLE articles ADD COLUMN IF NOT EXISTS tg_attempts INTEGER DEFAULT 0",
+                "ALTER TABLE articles ADD COLUMN IF NOT EXISTS tg_last_error TEXT",
+                "ALTER TABLE articles ADD COLUMN IF NOT EXISTS tg_last_attempt_at TIMESTAMPTZ",
+                "ALTER TABLE articles ADD COLUMN IF NOT EXISTS tg_sent_at TIMESTAMPTZ",
             ]:
                 cursor.execute(col_sql)
             # Index để truy vấn nhanh bài nào chưa xử lý → tối ưu CPU/RAM
@@ -147,8 +161,8 @@ def upsert_article(article: Article) -> Optional[bool]:
         with conn.cursor() as cursor:
             cursor.execute('''
                 INSERT INTO articles (
-                    id, title, url, source, published_at, summary, scraped_at, processed, retry_count
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, FALSE, 0)
+                    id, title, url, source, published_at, published_from_source, summary, scraped_at, processed, retry_count
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, FALSE, 0)
                 ON CONFLICT (id) DO NOTHING
             ''', (
                 article.id,
@@ -156,6 +170,7 @@ def upsert_article(article: Article) -> Optional[bool]:
                 str(article.url),
                 article.source,
                 article.published_at,
+                article.published_from_source,
                 article.summary,
                 article.scraped_at
             ))
@@ -177,13 +192,16 @@ def get_unprocessed() -> List[Article]:
     VÀ chưa vượt quá số lần retry tối đa.
     """
     conn = _get_pool().getconn()
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=30)
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute(
                 """SELECT * FROM articles
-                   WHERE processed = FALSE AND retry_count < %s
+                   WHERE processed = FALSE
+                     AND retry_count < %s
+                     AND COALESCE(published_at, scraped_at) > %s
                    ORDER BY scraped_at DESC""",
-                (MAX_RETRY,)
+                (MAX_RETRY, cutoff)
             )
             rows = cursor.fetchall()
     except OperationalError as e:
@@ -200,11 +218,13 @@ def get_unprocessed() -> List[Article]:
                 title=row['title'],
                 source=row['source'],
                 published_at=row['published_at'],
+                published_from_source=bool(row.get('published_from_source', True)),
                 summary=row['summary'],
                 scraped_at=row['scraped_at'],
                 narrative_tag=row.get('narrative_tag'),
                 affected_tokens=row.get('affected_tokens'),
                 urgency=row.get('urgency'),
+                low_confidence=bool(row.get('low_confidence', False)),
                 processed=False,
             )
             articles.append(art)
@@ -251,6 +271,71 @@ def mark_processed(
         _get_pool().putconn(conn)
 
 
+def mark_processed_with_tg(
+    article_id: str,
+    sentiment: Optional[float],
+    market_impact: MarketImpact,
+    key_takeaway: Optional[str],
+    narrative_tag: Optional[str] = None,
+    affected_tokens: Optional[List[str]] = None,
+    urgency: Optional[str] = None,
+    *,
+    low_confidence: bool = False,
+    tg_sent: Optional[bool] = None,
+    tg_status: Optional[str] = None,
+    tg_attempts: Optional[int] = None,
+) -> None:
+    """
+    Atomic write: mark_processed + tg_sent trong cùng 1 UPDATE.
+
+    Vector 3d fix: trước đây mark_processed (line A) và mark_tg_sent (line B) là 2
+    UPDATE riêng. Nếu pipeline crash giữa A và B, bài sẽ ở trạng thái processed=TRUE
+    nhưng tg_sent=NULL, khiến lần chạy sau "vớt" lại bài cũ và phun ra Telegram.
+    Hàm này gộp cả hai trong 1 UPDATE để chỉ có 2 outcome:
+      - cả processed + tg_sent ghi nhận thành công, hoặc
+      - cả hai chưa ghi (DB rollback) → bài còn ở queue cũ, sẽ được phân tích lại.
+
+    ``tg_sent``:
+      - None  : bài neutral, không cần gửi.
+      - True  : bài actionable đã gửi Telegram thành công.
+      - False : bài actionable nhưng gửi Telegram thất bại → retry trong cửa sổ 30 phút.
+    """
+    impact_str = market_impact.value if market_impact else "neutral"
+    conn = _get_pool().getconn()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE articles
+                SET sentiment = %s,
+                    market_impact = %s,
+                    key_takeaway = %s,
+                    narrative_tag = %s,
+                    affected_tokens = %s,
+                    urgency = %s,
+                    low_confidence = %s,
+                    tg_sent = %s,
+                    tg_status = %s,
+                    tg_attempts = COALESCE(%s, tg_attempts),
+                    processed = TRUE
+                WHERE id = %s
+                """,
+                (
+                    sentiment, impact_str, key_takeaway, narrative_tag,
+                    affected_tokens, urgency, low_confidence, tg_sent, tg_status, tg_attempts, article_id,
+                ),
+            )
+        conn.commit()
+    except OperationalError as e:
+        conn.rollback()
+        logger.error(
+            "Lỗi kết nối khi mark_processed_with_tg (ID: %s): %s",
+            article_id, e,
+        )
+    finally:
+        _get_pool().putconn(conn)
+
+
 def increment_retry(article_id: str):
     """
     Tăng retry_count lên 1 khi AI xử lý thất bại.
@@ -288,23 +373,88 @@ def mark_tg_sent(article_id: str, success: bool) -> None:
         _get_pool().putconn(conn)
 
 
-def get_tg_failed(hours: int = 48, null_window_hours: int = 168) -> List[Article]:
+def mark_tg_attempt(article_id: str, success: bool, error: Optional[str] = None) -> None:
     """
-    Lấy các bài actionable cần (re)gửi Telegram.
+    Ghi kết quả một lần gửi Telegram theo state machine:
+      - success=True  -> tg_status='sent',   tg_sent=TRUE,  tg_sent_at=NOW()
+      - success=False -> tg_status='failed', tg_sent=FALSE, tg_last_error=error
+    Đồng thời tăng tg_attempts +1 và ghi tg_last_attempt_at.
+    """
+    conn = _get_pool().getconn()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE articles
+                SET tg_attempts = COALESCE(tg_attempts, 0) + 1,
+                    tg_last_attempt_at = NOW(),
+                    tg_last_error = %s,
+                    tg_sent = %s,
+                    tg_status = %s,
+                    tg_sent_at = CASE WHEN %s THEN NOW() ELSE tg_sent_at END
+                WHERE id = %s
+                """,
+                (
+                    None if success else (error or "send_failed"),
+                    success,
+                    "sent" if success else "failed",
+                    success,
+                    article_id,
+                ),
+            )
+        conn.commit()
+    except OperationalError as e:
+        conn.rollback()
+        logger.error(f"Lỗi khi mark_tg_attempt (ID: {article_id}): {e}")
+    finally:
+        _get_pool().putconn(conn)
 
-    Bao gồm 2 nhóm với 2 cửa sổ thời gian khác nhau:
-      1. ``tg_sent = FALSE``  → lần trước gửi TG thất bại, cần retry.
-         Cửa sổ ``hours`` giờ (mặc định 48h) — tránh spam tin lỗi-mạng quá cũ.
-      2. ``tg_sent IS NULL``  → đã processed actionable nhưng CHƯA TỪNG được gọi
-         ``mark_tg_sent`` (di sản code cũ trước commit b104b51 không gọi hàm này).
-         Cửa sổ rộng hơn ``null_window_hours`` (mặc định 7 ngày) để vớt hết
-         backlog 56 bài bị "kẹt vĩnh viễn" do bug observability.
 
-    Cả hai nhóm đều bị giới hạn thời gian để không spam tin quá cũ.
+def expire_stale_tg_queue(max_age_minutes: int = 30) -> int:
+    """
+    Đánh dấu EXPIRED cho các bài actionable còn pending/failed nhưng đã quá stale.
+    PM rule: tin quá 30 phút ở đầu queue => discard + log, không retry.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=max_age_minutes)
+    conn = _get_pool().getconn()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE articles
+                SET tg_status = 'expired',
+                    tg_last_error = 'stale_expired',
+                    tg_sent = FALSE,
+                    tg_last_attempt_at = NOW()
+                WHERE processed = TRUE
+                  AND market_impact IN ('bullish', 'bearish')
+                  AND COALESCE(tg_status, CASE WHEN tg_sent IS TRUE THEN 'sent'
+                                               WHEN tg_sent IS FALSE THEN 'failed'
+                                               ELSE 'pending' END) IN ('pending', 'failed')
+                  AND COALESCE(published_at, scraped_at) <= %s
+                """,
+                (cutoff,),
+            )
+            expired = cursor.rowcount
+        conn.commit()
+        return int(expired)
+    except OperationalError as e:
+        conn.rollback()
+        logger.error(f"Lỗi khi expire_stale_tg_queue: {e}")
+        return 0
+    finally:
+        _get_pool().putconn(conn)
+
+
+def get_tg_dispatch_queue(max_age_minutes: int = 30, max_attempts: int = 3) -> List[Article]:
+    """
+    Lấy queue gửi Telegram theo state machine:
+      - trạng thái pending/failed
+      - còn trong cửa sổ live (<= max_age_minutes)
+      - chưa vượt max_attempts
     """
     now = datetime.now(timezone.utc)
-    failed_cutoff = now - timedelta(hours=hours)
-    null_cutoff = now - timedelta(hours=null_window_hours)
+    cutoff = now - timedelta(minutes=max_age_minutes)
     conn = _get_pool().getconn()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
@@ -312,12 +462,13 @@ def get_tg_failed(hours: int = 48, null_window_hours: int = 168) -> List[Article
                 """SELECT * FROM articles
                    WHERE processed = TRUE
                      AND market_impact IN ('bullish', 'bearish')
-                     AND (
-                          (tg_sent = FALSE AND scraped_at > %s)
-                       OR (tg_sent IS NULL  AND scraped_at > %s)
-                     )
+                     AND COALESCE(tg_status, CASE WHEN tg_sent IS TRUE THEN 'sent'
+                                                  WHEN tg_sent IS FALSE THEN 'failed'
+                                                  ELSE 'pending' END) IN ('pending', 'failed')
+                     AND COALESCE(tg_attempts, 0) < %s
+                     AND COALESCE(published_at, scraped_at) > %s
                    ORDER BY scraped_at DESC""",
-                (failed_cutoff, null_cutoff),
+                (max_attempts, cutoff),
             )
             rows = cursor.fetchall()
     except OperationalError as e:
@@ -334,6 +485,7 @@ def get_tg_failed(hours: int = 48, null_window_hours: int = 168) -> List[Article
                 title=row['title'],
                 source=row['source'],
                 published_at=row['published_at'],
+                published_from_source=bool(row.get('published_from_source', True)),
                 summary=row['summary'],
                 scraped_at=row['scraped_at'],
                 sentiment=row.get('sentiment'),
@@ -342,9 +494,84 @@ def get_tg_failed(hours: int = 48, null_window_hours: int = 168) -> List[Article
                 narrative_tag=row.get('narrative_tag'),
                 affected_tokens=row.get('affected_tokens'),
                 urgency=row.get('urgency'),
+                low_confidence=bool(row.get('low_confidence', False)),
                 processed=True,
             )
             articles.append(art)
         except Exception as e:
             logger.error(f"Lỗi parse Article TG-failed (ID: {row['id']}): {e}")
     return articles
+
+
+def get_tg_failed(max_age_minutes: int = 30) -> List[Article]:
+    """
+    Backward-compatible alias (legacy callers).
+    """
+    return get_tg_dispatch_queue(max_age_minutes=max_age_minutes, max_attempts=3)
+
+
+def get_outbox_kpis(max_age_minutes: int = 30) -> dict:
+    """
+    KPI cho heartbeat vận hành outbox.
+
+    Trả về:
+      - pending_count
+      - failed_count
+      - expired_count_60m
+      - oldest_pending_age_min  (quan trọng nhất cho cửa sổ can thiệp trước 30m)
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=max_age_minutes)
+    conn = _get_pool().getconn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                SELECT
+                  COUNT(*) FILTER (
+                    WHERE processed = TRUE
+                      AND market_impact IN ('bullish','bearish')
+                      AND tg_status = 'pending'
+                      AND COALESCE(published_at, scraped_at) > %s
+                  ) AS pending_count,
+                  COUNT(*) FILTER (
+                    WHERE processed = TRUE
+                      AND market_impact IN ('bullish','bearish')
+                      AND tg_status = 'failed'
+                      AND COALESCE(published_at, scraped_at) > %s
+                  ) AS failed_count,
+                  COUNT(*) FILTER (
+                    WHERE tg_status = 'expired'
+                      AND tg_last_attempt_at > NOW() - INTERVAL '60 minutes'
+                  ) AS expired_count_60m,
+                  COALESCE(
+                    MAX(
+                      EXTRACT(EPOCH FROM (NOW() - COALESCE(published_at, scraped_at))) / 60.0
+                    ) FILTER (
+                      WHERE processed = TRUE
+                        AND market_impact IN ('bullish','bearish')
+                        AND tg_status IN ('pending','failed')
+                        AND COALESCE(published_at, scraped_at) > %s
+                    ),
+                    0
+                  ) AS oldest_pending_age_min
+                FROM articles
+                """,
+                (cutoff, cutoff, cutoff),
+            )
+            row = cursor.fetchone() or {}
+            return {
+                "pending_count": int(row.get("pending_count") or 0),
+                "failed_count": int(row.get("failed_count") or 0),
+                "expired_count_60m": int(row.get("expired_count_60m") or 0),
+                "oldest_pending_age_min": float(row.get("oldest_pending_age_min") or 0.0),
+            }
+    except OperationalError as e:
+        logger.error("Lỗi khi get_outbox_kpis: %s", e)
+        return {
+            "pending_count": 0,
+            "failed_count": 0,
+            "expired_count_60m": 0,
+            "oldest_pending_age_min": 0.0,
+        }
+    finally:
+        _get_pool().putconn(conn)

@@ -2,12 +2,15 @@ name: CryptoSentinel Scraper
 
 on:
   schedule:
-    - cron: '0 * * * *'  # Chạy tự động mỗi 1 giờ
+    - cron: '* * * * *'  # Chạy tự động mỗi 1 phút
   workflow_dispatch:       # Nút bấm chạy thủ công trên GitHub UI
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
+    concurrency:
+      group: cryptosentinel-scraper
+      cancel-in-progress: false
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -26,6 +29,11 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          UW_API_KEY: ${{ secrets.UW_API_KEY }}
+          ARKHAM_API_KEY: ${{ secrets.ARKHAM_API_KEY }}
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
+          ENABLE_OPS_TELEMETRY: "0"
+          ADMIN_CHAT_ID: ${{ secrets.ADMIN_CHAT_ID }}
+          HEARTBEAT_CHAT_ID: ${{ secrets.HEARTBEAT_CHAT_ID }}
           PREMIUM_CHAT_ID: ${{ secrets.PREMIUM_CHAT_ID }}
