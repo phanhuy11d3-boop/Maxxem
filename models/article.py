@@ -43,23 +43,44 @@ class MarketImpact(str, Enum):
     NEUTRAL = "neutral"
 
 
+_BULLISH_SYNONYMS = (
+    "bullish", "positive", "pump", "rally", "upbeat",
+    "favorable", "favourable", "uptrend", "up-trend", "up trend",
+    "buy", "long", "moon", "green", "optimistic",
+)
+_BEARISH_SYNONYMS = (
+    "bearish", "negative", "dump", "crash", "selloff", "sell-off",
+    "unfavorable", "unfavourable", "downtrend", "down-trend", "down trend",
+    "sell", "short", "red", "pessimistic",
+)
+
+
 def normalize_market_impact(raw: str) -> MarketImpact:
     """
     Chuyển đổi raw string từ LLM về MarketImpact Enum.
 
+    Bug đã sửa (2026-05-07): llama-3.3-70b-versatile thường trả về
+    "positive"/"negative" thay vì "bullish"/"bearish" mặc dù prompt
+    yêu cầu rõ. Trước fix, mọi giá trị lạ đều rơi vào NEUTRAL → bot
+    im lặng vĩnh viễn. Bảng từ điển bên dưới phủ các synonym phổ biến
+    LLM hay nhả ra thay vì sửa cả prompt rồi cầu nguyện model nghe lời.
+
     Ví dụ:
         "Bullish"       → MarketImpact.BULLISH
-        "BULLISH"       → MarketImpact.BULLISH
-        "bullish trend" → MarketImpact.BULLISH
-        "bearish move"  → MarketImpact.BEARISH
-        "unknown"       → MarketImpact.NEUTRAL  (fallback, không throw error)
+        "positive"      → MarketImpact.BULLISH    # thường gặp với 70B
+        "negative"      → MarketImpact.BEARISH
+        "uptrend"       → MarketImpact.BULLISH
+        "neutral"       → MarketImpact.NEUTRAL
         ""              → MarketImpact.NEUTRAL
     """
-    cleaned = raw.lower().strip()
-    if "bullish" in cleaned:
-        return MarketImpact.BULLISH
-    if "bearish" in cleaned:
+    cleaned = (raw or "").lower().strip()
+    if not cleaned:
+        return MarketImpact.NEUTRAL
+    # Check bearish trước để "not bullish" không bị bullish-match (an toàn)
+    if any(token in cleaned for token in _BEARISH_SYNONYMS):
         return MarketImpact.BEARISH
+    if any(token in cleaned for token in _BULLISH_SYNONYMS):
+        return MarketImpact.BULLISH
     return MarketImpact.NEUTRAL
 
 
@@ -308,8 +329,18 @@ if __name__ == "__main__":
     print("TEST 2: normalize_market_impact với các giá trị LLM hay trả về")
     print("=" * 60)
 
-    test_cases = ["Bullish", "BULLISH", "bullish trend", "Bearish", "BEARISH",
-                  "bearish pressure", "neutral", "NEUTRAL", "unknown", "", "N/A"]
+    test_cases = [
+        # Canonical
+        "Bullish", "BULLISH", "bullish trend",
+        "Bearish", "BEARISH", "bearish pressure",
+        "neutral", "NEUTRAL", "",
+        # Synonym phổ biến từ LLM (bug 2026-05-07)
+        "positive", "Positive", "negative", "Negative",
+        "uptrend", "downtrend", "pump", "dump", "rally", "crash",
+        "buy", "sell", "long", "short",
+        # Edge cases
+        "unknown", "N/A", "mixed",
+    ]
     for raw in test_cases:
         result = normalize_market_impact(raw)
         print(f"  {raw!r:25} → {result.value}")

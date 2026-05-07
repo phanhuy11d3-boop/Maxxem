@@ -109,14 +109,21 @@ def send_telegram(article: Article) -> bool:
 
 def send_heartbeat(scraped: int, new: int, ai_processed: int,
                    db_errors: int, llm_errors: int, tg_errors: int,
-                   duration_s: float) -> bool:
+                   duration_s: float,
+                   actionable: int = 0, tg_sent_ok: int = 0) -> bool:
     """
     Gửi báo cáo tổng kết pipeline sau mỗi lần chạy.
     Cho phép USER biết pipeline đang sống hay chết mà không cần vào GitHub Actions.
 
     Status icon:
       ✅ = Tất cả OK (không có lỗi nào)
-      ⚠️ = Có lỗi nhưng pipeline không sập
+      ⚠️ = Có lỗi NHƯNG pipeline không sập
+      🔇 = "Silent run" — không lỗi nhưng cũng không gửi tin nào (cần xem prompt/triage)
+
+    Bug đã sửa (2026-05-07): trước đây heartbeat chỉ in ``tg_errors`` (đếm fail).
+    Khi pipeline có 0 fail VÀ 0 attempt thì cũng hiện "TG: 0", che mất việc bot
+    im lặng vì LLM gắn nhãn neutral hết. Thêm ``actionable``/``tg_sent_ok`` để
+    USER nhìn 1 phát ra ngay trạng thái thật.
     """
     token = os.environ.get("BOT_TOKEN")
     chat_id = os.environ.get("CHAT_ID")
@@ -126,13 +133,18 @@ def send_heartbeat(scraped: int, new: int, ai_processed: int,
         return False
 
     total_errors = db_errors + llm_errors + tg_errors
-    status = "✅ OK" if total_errors == 0 else f"⚠️ {total_errors} errors"
+    if total_errors > 0:
+        status = f"⚠️ {total_errors} errors"
+    elif ai_processed > 0 and tg_sent_ok == 0 and actionable == 0:
+        status = "🔇 silent (no actionable)"
+    else:
+        status = "✅ OK"
     safe_status = html.escape(status)
 
     text = (
         f"<b>📊 CryptoSentinel Heartbeat</b> | {safe_status}\n"
         f"├ Scraped: {scraped} bài | Mới: {new}\n"
-        f"├ AI processed: {ai_processed}\n"
+        f"├ AI processed: {ai_processed} | Actionable: {actionable} | TG sent: {tg_sent_ok}\n"
         f"├ Errors — DB: {db_errors} | LLM: {llm_errors} | TG: {tg_errors}\n"
         f"└ Duration: {duration_s:.1f}s"
     )

@@ -7,15 +7,14 @@ Thiết kế "balanced":
 - Legacy pipeline vẫn là default production.
 - Agentic chỉ chạy khi gọi `python main.py --agentic`.
 - Nếu mapping agent/skill lỗi hoặc stage fail nghiêm trọng, caller fallback về legacy.
-- Declarative mapping: đọc skill từ .claude/agents/*.md và map sang Python handlers đã kiểm soát.
+- Runtime không đọc file playbook từ disk. Agent/skill registry là map tĩnh đã kiểm soát
+  để tránh crash khi tài liệu vận hành bị thiếu hoặc thay đổi.
 """
 
 from __future__ import annotations
 
 import logging
-import re
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Dict, List
 
 from models.article import Article, MarketImpact
@@ -45,14 +44,6 @@ DEFAULT_AGENT_SKILL_MAP = {
     "broadcaster": "broadcasting-delivery-skill",
 }
 
-AGENT_FILE_MAP = {
-    "scout": Path(".claude/agents/scout.md"),
-    "analyst": Path(".claude/agents/analyst.md"),
-    "auditor": Path(".claude/agents/auditor.md"),
-    "broadcaster": Path(".claude/agents/broadcaster.md"),
-}
-
-
 @dataclass
 class PipelineStats:
     scraped_count: int = 0
@@ -62,6 +53,8 @@ class PipelineStats:
     llm_errors: int = 0
     tg_errors: int = 0
     warnings: int = 0
+    actionable: int = 0
+    tg_sent_ok: int = 0
 
 
 @dataclass
@@ -76,28 +69,14 @@ class RuntimeContext:
             self.actionable_ids.add(article.id)
 
 
-def _extract_skills_from_agent_file(path: Path) -> List[str]:
-    if not path.exists():
-        return []
-    text = path.read_text(encoding="utf-8")
-    match = re.search(r"skills:\s*\[([^\]]*)\]", text)
-    if not match:
-        return []
-    raw = match.group(1).strip()
-    if not raw:
-        return []
-    return [part.strip().strip("'\"") for part in raw.split(",") if part.strip()]
+def load_agent_skill_registry(_base_dir: object | None = None) -> Dict[str, str]:
+    """
+    Trả về registry tĩnh cho runtime.
 
-
-def load_agent_skill_registry(base_dir: Path) -> Dict[str, str]:
-    registry: Dict[str, str] = {}
-    for role, rel_path in AGENT_FILE_MAP.items():
-        skills = _extract_skills_from_agent_file(base_dir / rel_path)
-        if skills:
-            registry[role] = skills[0]
-    for role, default_skill in DEFAULT_AGENT_SKILL_MAP.items():
-        registry.setdefault(role, default_skill)
-    return registry
+    `_base_dir` được giữ để không phá caller/test cũ, nhưng runtime không đọc file
+    playbook nữa. Tài liệu vận hành chỉ dành cho người/AI đọc.
+    """
+    return dict(DEFAULT_AGENT_SKILL_MAP)
 
 
 def _stage_scout(ctx: RuntimeContext, stats: PipelineStats) -> None:
@@ -211,29 +190,34 @@ def _stage_auditor(ctx: RuntimeContext, stats: PipelineStats) -> None:
 
 
 def _stage_broadcaster(ctx: RuntimeContext, stats: PipelineStats) -> None:
-    logger.info("[Broadcaster] Retry các bài TG-failed trước đó...")
+    logger.info("[Broadcaster] Retry các bài TG cần (re)gửi từ trước...")
     failed_articles = get_tg_failed()
     for article in failed_articles:
+        stats.actionable += 1
         sent = send_telegram(article)
         mark_tg_sent(article.id, sent)
-        if not sent:
+        if sent:
+            stats.tg_sent_ok += 1
+        else:
             stats.tg_errors += 1
 
     logger.info("[Broadcaster] Gửi các actionable mới từ analyst...")
     for article in ctx.actionable_articles:
+        stats.actionable += 1
         sent = send_telegram(article)
         mark_tg_sent(article.id, sent)
-        if not sent:
+        if sent:
+            stats.tg_sent_ok += 1
+        else:
             stats.tg_errors += 1
 
 
-def run_agentic_pipeline(max_batch_size: int = 20, base_dir: Path | None = None) -> PipelineStats:
+def run_agentic_pipeline(max_batch_size: int = 20, base_dir: object | None = None) -> PipelineStats:
     """
     Chạy pipeline agentic theo chuỗi:
     Scout -> Analyst -> Auditor -> Broadcaster.
     """
-    runtime_root = base_dir or Path(__file__).resolve().parent
-    registry = load_agent_skill_registry(runtime_root)
+    registry = load_agent_skill_registry(base_dir)
     logger.info("[Agentic] Skill registry: %s", registry)
     ctx = RuntimeContext(registry=registry)
     stats = PipelineStats()

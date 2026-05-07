@@ -288,23 +288,36 @@ def mark_tg_sent(article_id: str, success: bool) -> None:
         _get_pool().putconn(conn)
 
 
-def get_tg_failed(hours: int = 48) -> List[Article]:
+def get_tg_failed(hours: int = 48, null_window_hours: int = 168) -> List[Article]:
     """
-    Lấy các bài đã qua LLM (processed=TRUE, is_actionable) nhưng TG gửi thất bại (tg_sent=FALSE).
-    Giới hạn 48h để tránh gửi tin cũ hơn 2 ngày.
+    Lấy các bài actionable cần (re)gửi Telegram.
+
+    Bao gồm 2 nhóm với 2 cửa sổ thời gian khác nhau:
+      1. ``tg_sent = FALSE``  → lần trước gửi TG thất bại, cần retry.
+         Cửa sổ ``hours`` giờ (mặc định 48h) — tránh spam tin lỗi-mạng quá cũ.
+      2. ``tg_sent IS NULL``  → đã processed actionable nhưng CHƯA TỪNG được gọi
+         ``mark_tg_sent`` (di sản code cũ trước commit b104b51 không gọi hàm này).
+         Cửa sổ rộng hơn ``null_window_hours`` (mặc định 7 ngày) để vớt hết
+         backlog 56 bài bị "kẹt vĩnh viễn" do bug observability.
+
+    Cả hai nhóm đều bị giới hạn thời gian để không spam tin quá cũ.
     """
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    now = datetime.now(timezone.utc)
+    failed_cutoff = now - timedelta(hours=hours)
+    null_cutoff = now - timedelta(hours=null_window_hours)
     conn = _get_pool().getconn()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute(
                 """SELECT * FROM articles
                    WHERE processed = TRUE
-                     AND tg_sent = FALSE
                      AND market_impact IN ('bullish', 'bearish')
-                     AND scraped_at > %s
+                     AND (
+                          (tg_sent = FALSE AND scraped_at > %s)
+                       OR (tg_sent IS NULL  AND scraped_at > %s)
+                     )
                    ORDER BY scraped_at DESC""",
-                (cutoff,)
+                (failed_cutoff, null_cutoff),
             )
             rows = cursor.fetchall()
     except OperationalError as e:

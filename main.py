@@ -57,14 +57,16 @@ def _update_state(db_errors: int, llm_errors: int, tg_errors: int) -> None:
 
 def _process_chunk(
     chunk: list, groq_client: Groq
-) -> Tuple[int, int, int]:
+) -> Tuple[int, int, int, int, int]:
     """
     Xử lý một chunk bài qua Triage → Batch Analysis → Telegram.
-    Trả về (ai_processed, llm_errors, tg_errors) cho chunk này.
+    Trả về (ai_processed, llm_errors, tg_errors, actionable, tg_sent_ok) cho chunk này.
     """
     ai_processed = 0
     llm_errors = 0
     tg_errors = 0
+    actionable = 0
+    tg_sent_ok = 0
 
     logger.info(f"   -> Triage {len(chunk)} bài...")
     triage_results = triage_articles(chunk, groq_client)
@@ -98,7 +100,7 @@ def _process_chunk(
     )
 
     if not high_impact:
-        return ai_processed, llm_errors, tg_errors
+        return ai_processed, llm_errors, tg_errors, actionable, tg_sent_ok
 
     success = analyze_articles_batch(high_impact, groq_client)
     if not success:
@@ -106,7 +108,7 @@ def _process_chunk(
         logger.error("Batch analysis failed cho chunk.")
         for article in high_impact:
             increment_retry(article.id)
-        return ai_processed, llm_errors, tg_errors
+        return ai_processed, llm_errors, tg_errors, actionable, tg_sent_ok
 
     for article in high_impact:
         if not article.processed:
@@ -128,13 +130,16 @@ def _process_chunk(
         ai_processed += 1
 
         if article.is_actionable:
+            actionable += 1
             sent = send_telegram(article)
             mark_tg_sent(article.id, sent)  # ghi kết quả TG để có thể retry sau
-            if not sent:
+            if sent:
+                tg_sent_ok += 1
+            else:
                 tg_errors += 1
                 logger.warning(f"Telegram fail cho {article.id[:12]} — sẽ retry lần chạy sau.")
 
-    return ai_processed, llm_errors, tg_errors
+    return ai_processed, llm_errors, tg_errors, actionable, tg_sent_ok
 
 
 def run_legacy_pipeline() -> None:
@@ -148,6 +153,8 @@ def run_legacy_pipeline() -> None:
     scraped_count = 0
     new_count = 0
     ai_processed = 0
+    actionable_total = 0
+    tg_sent_ok_total = 0
 
     # Phase 1: init_db — nếu fail, gửi heartbeat ngay và thoát
     try:
@@ -163,14 +170,17 @@ def run_legacy_pipeline() -> None:
 
     # Phase 2-7: mọi lỗi không mong đợi đều được bắt; finally đảm bảo heartbeat luôn gửi
     try:
-        # Phase 2: Retry Telegram-failed articles từ lần chạy trước
+        # Phase 2: Retry Telegram-failed/never-sent articles từ lần chạy trước
         tg_failed = get_tg_failed()
         if tg_failed:
-            logger.info(f"2. Retry {len(tg_failed)} bài TG-failed từ lần chạy trước...")
+            logger.info(f"2. Retry {len(tg_failed)} bài TG cần (re)gửi từ trước...")
             for article in tg_failed:
+                actionable_total += 1
                 sent = send_telegram(article)
                 mark_tg_sent(article.id, sent)
-                if not sent:
+                if sent:
+                    tg_sent_ok_total += 1
+                else:
                     tg_errors += 1
 
         # Phase 3: Cào tin từ RSS
@@ -210,10 +220,12 @@ def run_legacy_pipeline() -> None:
                 for idx, chunk_start in enumerate(range(0, total_unprocessed, MAX_BATCH_SIZE), 1):
                     chunk = unprocessed[chunk_start:chunk_start + MAX_BATCH_SIZE]
                     logger.info(f"   Chunk {idx}/{num_chunks} ({len(chunk)} bài)...")
-                    c_ai, c_llm, c_tg = _process_chunk(chunk, groq_client)
+                    c_ai, c_llm, c_tg, c_act, c_ok = _process_chunk(chunk, groq_client)
                     ai_processed += c_ai
                     llm_errors += c_llm
                     tg_errors += c_tg
+                    actionable_total += c_act
+                    tg_sent_ok_total += c_ok
 
     except Exception as e:
         logger.critical(f"Pipeline crash không mong đợi: {e}", exc_info=True)
@@ -225,6 +237,7 @@ def run_legacy_pipeline() -> None:
         logger.info(
             f"=== Pipeline Hoàn Tất | "
             f"Mới: {new_count} | AI: {ai_processed} | "
+            f"Actionable: {actionable_total} | TG OK: {tg_sent_ok_total} | "
             f"Lỗi DB/LLM/TG: {db_errors}/{llm_errors}/{tg_errors} | "
             f"Thời gian: {duration:.1f}s ==="
         )
@@ -236,6 +249,8 @@ def run_legacy_pipeline() -> None:
             llm_errors=llm_errors,
             tg_errors=tg_errors,
             duration_s=duration,
+            actionable=actionable_total,
+            tg_sent_ok=tg_sent_ok_total,
         )
         _update_state(db_errors=db_errors, llm_errors=llm_errors, tg_errors=tg_errors)
 
@@ -255,9 +270,12 @@ def run_agentic_with_legacy_fallback() -> None:
         stats = run_agentic_pipeline(max_batch_size=MAX_BATCH_SIZE)
         duration = time.monotonic() - start_time
         logger.info(
-            "=== Agentic Hoàn Tất | Mới: %s | AI: %s | Lỗi DB/LLM/TG: %s/%s/%s | Cảnh báo: %s | %.1fs ===",
+            "=== Agentic Hoàn Tất | Mới: %s | AI: %s | Actionable: %s | TG OK: %s | "
+            "Lỗi DB/LLM/TG: %s/%s/%s | Cảnh báo: %s | %.1fs ===",
             stats.new_count,
             stats.ai_processed,
+            stats.actionable,
+            stats.tg_sent_ok,
             stats.db_errors,
             stats.llm_errors,
             stats.tg_errors,
@@ -272,6 +290,8 @@ def run_agentic_with_legacy_fallback() -> None:
             llm_errors=stats.llm_errors,
             tg_errors=stats.tg_errors,
             duration_s=duration,
+            actionable=stats.actionable,
+            tg_sent_ok=stats.tg_sent_ok,
         )
         _update_state(
             db_errors=stats.db_errors,
