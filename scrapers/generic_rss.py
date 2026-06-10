@@ -11,7 +11,7 @@ import feedparser
 import logging
 from typing import List
 from datetime import datetime, timezone
-import time
+import calendar
 from email.utils import parsedate_to_datetime
 from pydantic import ValidationError
 import socket
@@ -74,7 +74,9 @@ def scrape_feed(source: dict) -> List[Article]:
             published_at = None
             published_from_source = True
             if hasattr(entry, "published_parsed") and entry.published_parsed:
-                published_at = datetime.fromtimestamp(time.mktime(entry.published_parsed), timezone.utc)
+                # published_parsed là struct_time UTC; calendar.timegm giữ nguyên UTC,
+                # còn time.mktime sẽ diễn giải nhầm theo giờ local (lệch -7h trên máy ICT)
+                published_at = datetime.fromtimestamp(calendar.timegm(entry.published_parsed), timezone.utc)
             elif hasattr(entry, "published") and entry.published:
                 try:
                     published_at = parsedate_to_datetime(entry.published)

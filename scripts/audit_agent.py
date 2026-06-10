@@ -1,12 +1,24 @@
 import os
 import sys
+import pathlib
 import logging
 from urllib.parse import urlparse
 
 # Thêm root dir vào sys.path để import được các module của dự án
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+sys.path.append(str(ROOT))
 
-from storage.postgres import _get_pool
+# Load .env TRƯỚC khi import storage.postgres — DATABASE_URL được đọc lúc import module.
+# CI inject secrets qua env nên đoạn này no-op trên GitHub Actions.
+_env_path = ROOT / ".env"
+if _env_path.exists():
+    for _line in _env_path.read_text(encoding="utf-8").splitlines():
+        _line = _line.strip()
+        if _line and not _line.startswith("#") and "=" in _line:
+            _k, _, _v = _line.partition("=")
+            os.environ.setdefault(_k.strip(), _v.strip().strip('"').strip("'"))
+
+from storage.postgres import _get_pool, MAX_RETRY
 from models.article import MarketImpact
 
 logging.basicConfig(level=logging.INFO, format='[MonitorAgent] %(levelname)s - %(message)s')
@@ -85,25 +97,36 @@ class MonitorAgent:
                     self.errors += 1
                     
                 # 2. Kiểm tra tính hợp lệ của AI Output (Market Impact)
-                valid_impacts = [e.value for e in MarketImpact]
-                cur.execute("SELECT id, market_impact FROM articles WHERE processed = TRUE;")
-                processed_articles = cur.fetchall()
-                
-                bad_impacts = 0
-                for a_id, impact in processed_articles:
-                    if impact not in valid_impacts:
-                        logger.error(f"Bài báo {a_id} có market_impact rác từ LLM: '{impact}'. Vi phạm Enum contract!")
-                        bad_impacts += 1
-                        self.errors += 1
-                
-                if bad_impacts == 0:
+                # SQL aggregate thay vì kéo cả bảng về Python — bảng lớn dần theo cadence.
+                # Tách riêng NULL (buildup cần theo dõi) khỏi chuỗi rác (vi phạm Enum contract).
+                valid_impacts = tuple(e.value for e in MarketImpact)
+                cur.execute(
+                    """
+                    SELECT
+                      COUNT(*) FILTER (WHERE market_impact IS NULL) AS null_impact,
+                      COUNT(*) FILTER (
+                        WHERE market_impact IS NOT NULL AND market_impact NOT IN %s
+                      ) AS bad_impact
+                    FROM articles WHERE processed = TRUE;
+                    """,
+                    (valid_impacts,),
+                )
+                null_impact, bad_impact = cur.fetchone()
+                if bad_impact > 0:
+                    logger.error(f"PHÁT HIỆN {bad_impact} bài có market_impact rác từ LLM. Vi phạm Enum contract!")
+                    self.errors += bad_impact
+                else:
                     logger.info("Kiểm tra Enum MarketImpact: Đạt chuẩn 100%. Không có rác LLM.")
-                
-                # 3. FinOps: Đảm bảo không có bài nào bị kẹt retry quá số lần cho phép
-                cur.execute("SELECT COUNT(*) FROM articles WHERE retry_count > 3;")
+                if null_impact > 0:
+                    logger.warning(f"Có {null_impact} bài processed=TRUE nhưng market_impact IS NULL (NULL-impact buildup).")
+                    self.warnings += 1
+
+                # 3. FinOps: bài bị parked vĩnh viễn nằm ở ĐÚNG retry_count = MAX_RETRY
+                # (get_unprocessed lọc retry_count < MAX_RETRY) — phải đếm >=, không phải >
+                cur.execute("SELECT COUNT(*) FROM articles WHERE processed = FALSE AND retry_count >= %s;", (MAX_RETRY,))
                 stuck = cur.fetchone()[0]
                 if stuck > 0:
-                    logger.warning(f"FinOps Warning: Có {stuck} bài báo bị kẹt (retry > 3). Cần kiểm tra prompt hoặc rate limit.")
+                    logger.warning(f"FinOps Warning: Có {stuck} bài báo bị kẹt (retry >= {MAX_RETRY}). Cần kiểm tra prompt hoặc rate limit.")
                     self.warnings += 1
                     
         except Exception as e:

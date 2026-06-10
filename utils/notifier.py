@@ -7,6 +7,7 @@ Chịu trách nhiệm gửi tín hiệu (Bullish/Bearish) tới Telegram.
 
 import os
 import html
+import time
 import logging
 import requests
 from datetime import datetime, timezone
@@ -16,6 +17,8 @@ from models.article import Article
 
 logger = logging.getLogger(__name__)
 SLA_SECONDS = 120
+MAX_429_RETRIES = 2   # số lần retry in-process khi Telegram trả 429
+MAX_429_WAIT_S = 10   # trần chờ mỗi lần — giữ pipeline cadence không bị treo
 
 
 def _is_main_channel(chat_id: str) -> bool:
@@ -48,16 +51,37 @@ def _post_to_telegram(
     payload: dict = {"chat_id": chat_id, "text": text, "disable_web_page_preview": True}
     if parse_mode:
         payload["parse_mode"] = parse_mode
-    try:
-        response = requests.post(url, json=payload, timeout=15)
-        response.raise_for_status()
-        return True
-    except requests.exceptions.HTTPError as e:
-        logger.error(f"❌ Lỗi HTTP từ Telegram: {e}")
-        return False
-    except Exception as e:
-        logger.error(f"❌ Lỗi gửi Telegram: {e}")
-        return False
+    for attempt in range(1 + MAX_429_RETRIES):
+        try:
+            response = requests.post(url, json=payload, timeout=15)
+            response.raise_for_status()
+            return True
+        except requests.exceptions.HTTPError as e:
+            status = e.response.status_code if e.response is not None else None
+            # 429: rate limit tạm thời — retry in-process theo retry_after thay vì
+            # đốt 1 attempt của outbox (3 run dính 429 liên tiếp = bài expired oan)
+            if status == 429 and attempt < MAX_429_RETRIES:
+                retry_after = MAX_429_WAIT_S
+                try:
+                    retry_after = int(e.response.json()["parameters"]["retry_after"])
+                except Exception:
+                    try:
+                        retry_after = int(e.response.headers.get("Retry-After", MAX_429_WAIT_S))
+                    except Exception:
+                        pass
+                wait_s = min(max(retry_after, 1), MAX_429_WAIT_S)
+                logger.warning(
+                    f"⚠️ Telegram 429 rate-limit — chờ {wait_s}s rồi thử lại "
+                    f"({attempt + 1}/{MAX_429_RETRIES})..."
+                )
+                time.sleep(wait_s)
+                continue
+            logger.error(f"❌ Lỗi HTTP từ Telegram (status={status}): {e}")
+            return False
+        except Exception as e:
+            logger.error(f"❌ Lỗi gửi Telegram: {e}")
+            return False
+    return False
 
 
 def _build_premium_message(article: Article) -> str:
@@ -138,6 +162,11 @@ def send_telegram(article: Article) -> bool:
     if success:
         logger.info(f"✅ Đã gửi Telegram (free): {article.title[:40]}...")
         if lag_seconds > SLA_SECONDS:
+            # WARNING log luôn ghi — SLA breach không được tàng hình khi telemetry tắt
+            logger.warning(
+                f"⚠️ SLA_BREACH: lag={lag_seconds}s > {SLA_SECONDS}s | "
+                f"{article.source} | {article.title[:60]}"
+            )
             send_admin_alert(
                 f"⚠️ <b>SLA_BREACH</b>\n"
                 f"{html.escape(article.source)} | {html.escape(article.title[:120])}\n"

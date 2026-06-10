@@ -7,7 +7,9 @@ Thay đổi từ v2.1 (sqlite.py):
   - ĐỔI TÊN: sqlite.py → postgres.py (đúng Single Responsibility, không gây nhầm lẫn).
   - FIX DATA TYPES: TEXT timestamps → TIMESTAMPTZ, INTEGER boolean → BOOLEAN.
   - FIX CONNECTION PATTERN: Mở/đóng per-call → SimpleConnectionPool (tái sử dụng kết nối).
-  - FIX ERROR HANDLING: Thêm try/except psycopg2.OperationalError cho toàn bộ DB ops.
+  - FIX ERROR HANDLING: try/except psycopg2.Error (mọi lỗi DB, không chỉ OperationalError)
+    cho toàn bộ DB ops — rollback trước khi trả connection về pool, pipeline không crash
+    vì một câu UPDATE lỗi dữ liệu.
 
 Triết lý thiết kế (giữ nguyên):
   1. FinOps (Token Management): get_unprocessed() chặn gọi AI cho tin cũ.
@@ -22,7 +24,7 @@ from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 
 import psycopg2
-from psycopg2 import pool, OperationalError
+from psycopg2 import pool
 from psycopg2.extras import RealDictCursor
 
 from models.article import Article, MarketImpact, normalize_market_impact
@@ -65,7 +67,7 @@ def _get_pool() -> pool.SimpleConnectionPool:
             # Đảm bảo pool được đóng sạch khi process kết thúc
             atexit.register(_close_pool)
             logger.info(f"✅ Connection pool khởi tạo thành công (min={_POOL_MIN}, max={_POOL_MAX})")
-        except OperationalError as e:
+        except psycopg2.Error as e:
             raise RuntimeError(f"Không thể kết nối Supabase: {e}") from e
     return _pool
 
@@ -142,7 +144,7 @@ def init_db():
             ''')
         conn.commit()
         logger.info("✅ DB schema sẵn sàng.")
-    except OperationalError as e:
+    except psycopg2.Error as e:
         conn.rollback()
         logger.error(f"Lỗi kết nối khi init_db: {e}")
         raise
@@ -177,7 +179,7 @@ def upsert_article(article: Article) -> Optional[bool]:
             is_new = cursor.rowcount > 0
         conn.commit()
         return is_new
-    except OperationalError as e:
+    except psycopg2.Error as e:
         conn.rollback()
         logger.error(f"Lỗi kết nối khi upsert_article (ID: {article.id}): {e}")
         return None
@@ -204,7 +206,7 @@ def get_unprocessed() -> List[Article]:
                 (MAX_RETRY, cutoff)
             )
             rows = cursor.fetchall()
-    except OperationalError as e:
+    except psycopg2.Error as e:
         logger.error(f"Lỗi kết nối khi get_unprocessed: {e}")
         return []
     finally:
@@ -264,7 +266,7 @@ def mark_processed(
                 WHERE id = %s
             ''', (sentiment, impact_str, key_takeaway, narrative_tag, affected_tokens, urgency, article_id))
         conn.commit()
-    except OperationalError as e:
+    except psycopg2.Error as e:
         conn.rollback()
         logger.error(f"Lỗi kết nối khi mark_processed (ID: {article_id}): {e}")
     finally:
@@ -326,7 +328,7 @@ def mark_processed_with_tg(
                 ),
             )
         conn.commit()
-    except OperationalError as e:
+    except psycopg2.Error as e:
         conn.rollback()
         logger.error(
             "Lỗi kết nối khi mark_processed_with_tg (ID: %s): %s",
@@ -349,7 +351,7 @@ def increment_retry(article_id: str):
                 (article_id,)
             )
         conn.commit()
-    except OperationalError as e:
+    except psycopg2.Error as e:
         conn.rollback()
         logger.error(f"Lỗi kết nối khi increment_retry (ID: {article_id}): {e}")
     finally:
@@ -366,7 +368,7 @@ def mark_tg_sent(article_id: str, success: bool) -> None:
                 (success, article_id)
             )
         conn.commit()
-    except OperationalError as e:
+    except psycopg2.Error as e:
         conn.rollback()
         logger.error(f"Lỗi khi mark_tg_sent (ID: {article_id}): {e}")
     finally:
@@ -403,7 +405,7 @@ def mark_tg_attempt(article_id: str, success: bool, error: Optional[str] = None)
                 ),
             )
         conn.commit()
-    except OperationalError as e:
+    except psycopg2.Error as e:
         conn.rollback()
         logger.error(f"Lỗi khi mark_tg_attempt (ID: {article_id}): {e}")
     finally:
@@ -438,7 +440,7 @@ def expire_stale_tg_queue(max_age_minutes: int = 30) -> int:
             expired = cursor.rowcount
         conn.commit()
         return int(expired)
-    except OperationalError as e:
+    except psycopg2.Error as e:
         conn.rollback()
         logger.error(f"Lỗi khi expire_stale_tg_queue: {e}")
         return 0
@@ -471,7 +473,7 @@ def get_tg_dispatch_queue(max_age_minutes: int = 30, max_attempts: int = 3) -> L
                 (max_attempts, cutoff),
             )
             rows = cursor.fetchall()
-    except OperationalError as e:
+    except psycopg2.Error as e:
         logger.error(f"Lỗi khi get_tg_failed: {e}")
         return []
     finally:
@@ -565,7 +567,7 @@ def get_outbox_kpis(max_age_minutes: int = 30) -> dict:
                 "expired_count_60m": int(row.get("expired_count_60m") or 0),
                 "oldest_pending_age_min": float(row.get("oldest_pending_age_min") or 0.0),
             }
-    except OperationalError as e:
+    except psycopg2.Error as e:
         logger.error("Lỗi khi get_outbox_kpis: %s", e)
         return {
             "pending_count": 0,
