@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(py -3 scripts/diagnose_*)",
+      "Bash(py -3 scripts/query_*)",
+      "Bash(py -3 scripts/audit_*)",
+      "Bash(py -3 -m pytest *)"
+    ]
+  }
+}
