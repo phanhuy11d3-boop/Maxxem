@@ -29,6 +29,9 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run CryptoSentinel Pipeline (loop ~5h30, mỗi phút một vòng)
+        # Timeout ở mức step (ngắn hơn trần job 350) để nếu loop treo,
+        # step "Giao ca" phía dưới vẫn kịp chạy và dispatch ca kế tiếp.
+        timeout-minutes: 340
         run: |
           END=$((SECONDS + 19800))
           i=0
@@ -61,3 +64,28 @@ jobs:
           ADMIN_CHAT_ID: ${{ secrets.ADMIN_CHAT_ID }}
           HEARTBEAT_CHAT_ID: ${{ secrets.HEARTBEAT_CHAT_ID }}
           PREMIUM_CHAT_ID: ${{ secrets.PREMIUM_CHAT_ID }}
+
+      - name: Giao ca — tự dispatch shift kế tiếp
+        # Scheduler GH bị throttle nên không thể dựa vào cron để xếp ca mới kịp lúc
+        # (đã đo gap 115 phút ở vùng giao ca). Ca tự "đẻ" ca kế tiếp qua API.
+        # GITHUB_TOKEN mặc định bị chặn tự kích hoạt workflow (chống đệ quy) → cần PAT.
+        # Thiếu PAT thì chỉ cảnh báo và quay về dựa cron như cũ — không fail run.
+        if: always()
+        env:
+          WORKFLOW_PAT: ${{ secrets.WORKFLOW_PAT }}
+        run: |
+          if [ -z "$WORKFLOW_PAT" ]; then
+            echo "::warning::Chưa có secret WORKFLOW_PAT — bỏ qua tự giao ca, chờ cron throttled."
+            exit 0
+          fi
+          code=$(curl -sS -o /tmp/dispatch_resp.txt -w '%{http_code}' -X POST \
+            -H "Authorization: Bearer $WORKFLOW_PAT" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/scraper.yml/dispatches" \
+            -d '{"ref":"main"}')
+          if [ "$code" = "204" ]; then
+            echo "Đã dispatch ca kế tiếp (HTTP 204)."
+          else
+            cat /tmp/dispatch_resp.txt
+            echo "::warning::Dispatch ca kế tiếp thất bại (HTTP $code) — cron sẽ đỡ."
+          fi
