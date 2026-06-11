@@ -8,7 +8,7 @@ Triết lý: **deterministic**, ưu tiên recall (miss tin là lỗi nghiêm tr�
 
 ## 1. Biến môi trường bắt buộc & tùy chọn
 
-**Bắt buộc:** `DATABASE_URL`, `GROQ_API_KEY`, `BOT_TOKEN`, `CHAT_ID`.
+**Bắt buộc:** `DATABASE_URL`, `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL`, `BOT_TOKEN`, `CHAT_ID`. (Trên Actions, `LLM_BASE_URL` phải là URL public — localhost không reach được từ runner.)
 
 **Khuyến nghị vận hành:**
 
@@ -63,7 +63,7 @@ Triết lý: **deterministic**, ưu tiên recall (miss tin là lỗi nghiêm tr�
 
 ## 6. LLM troubleshooting
 
-- Lỗi hàng loạt HTTP **400** từ Groq → kiểm tra **model ID**/`response_format`/prompt contract trước khi kết luận sai key.
+- Lỗi hàng loạt HTTP **400** từ LLM gateway → kiểm tra **model ID**/`response_format`/prompt contract trước khi kết luận sai key.
 - `LLM_MISSING_RESULTS` alert: batch 70B thiếu object theo id — không bump `retry`; bài gắn `low_confidence`.
 
 ---

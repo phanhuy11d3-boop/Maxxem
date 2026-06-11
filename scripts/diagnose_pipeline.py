@@ -24,7 +24,7 @@ from psycopg2.extras import RealDictCursor
 
 from models.article import Article, MarketImpact
 from processors.insight_extractor import (
-    get_groq_client, triage_articles, analyze_articles_batch,
+    get_llm_client, triage_articles, analyze_articles_batch,
 )
 
 
@@ -67,9 +67,9 @@ def main() -> None:
     if not chunk:
         print("Khong co bai nao."); return
 
-    client = get_groq_client()
+    client = get_llm_client()
     if not client:
-        print("Thieu GROQ_API_KEY."); return
+        print("Thieu LLM_API_KEY / LLM_BASE_URL."); return
 
     print()
     print("=" * 72)

@@ -1,8 +1,8 @@
 """
 processors/insight_extractor.py
 ===============================
-Mô-đun tương tác với Groq API.
-Tối ưu hóa Token FinOps: Tiered LLM (8B -> 70B) & Batch Processing.
+Mô-đun tương tác với LLM qua endpoint OpenAI-compatible (cấu hình bằng env).
+Tối ưu hóa Token FinOps: Tiered LLM (triage -> deep analysis) & Batch Processing.
 
 Trading-grade hardening (2026-05-07):
   - Triage giờ trả Dict[id -> bool] thay vì List[bool] thuần →
@@ -20,13 +20,23 @@ import time
 import logging
 from typing import Optional, Dict, List, Tuple
 
-from groq import Groq
+from openai import OpenAI
 from models.article import Article, MarketImpact, normalize_market_impact
 
 logger = logging.getLogger(__name__)
 
-FAST_MODEL = "llama-3.1-8b-instant"
-POWER_MODEL = "llama-3.3-70b-versatile"
+# LLM endpoint OpenAI-compatible, cấu hình qua env:
+#   LLM_API_KEY  — API key (bắt buộc)
+#   LLM_BASE_URL — base URL của gateway, vd. http://localhost:20128/v1
+#   LLM_MODEL    — model dùng chung cho cả triage lẫn deep analysis
+#   LLM_MODEL_FAST / LLM_MODEL_POWER — override riêng nếu muốn tier hoá lại
+DEFAULT_MODEL = os.environ.get("LLM_MODEL", "gc/gemini-3-pro-preview")
+FAST_MODEL = os.environ.get("LLM_MODEL_FAST", DEFAULT_MODEL)
+POWER_MODEL = os.environ.get("LLM_MODEL_POWER", DEFAULT_MODEL)
+# Model dự phòng (LLM_MODEL_BACKUP): primary lỗi (429 capacity / JSON hỏng) → tự đổi
+# sang model này ngay, không chờ backoff, rồi mới rơi về anti-miss / transient handling.
+# Để trống = tắt fallback, giữ hành vi retry cùng model như cũ.
+BACKUP_MODEL = os.environ.get("LLM_MODEL_BACKUP", "")
 
 # Rescue threshold: nếu LLM trả market_impact="neutral" nhưng |sentiment| đủ mạnh,
 # suy ngược ra direction. Tránh trường hợp model nhả "neutral" + sentiment=0.7 vô lý.
@@ -79,19 +89,20 @@ Return ONE JSON object (no markdown, no prose), shape:
 Length of "results" MUST equal length of input."""
 
 
-def get_groq_client() -> Optional[Groq]:
-    api_key = os.environ.get("GROQ_API_KEY")
-    if not api_key:
-        logger.error("Chưa cấu hình GROQ_API_KEY.")
+def get_llm_client() -> Optional[OpenAI]:
+    api_key = os.environ.get("LLM_API_KEY")
+    base_url = os.environ.get("LLM_BASE_URL")
+    if not api_key or not base_url:
+        logger.error("Chưa cấu hình LLM_API_KEY / LLM_BASE_URL.")
         return None
-    return Groq(api_key=api_key)
+    return OpenAI(api_key=api_key, base_url=base_url)
 
 
 # ===========================================================================
 # Vector 3a fix: Triage trả Dict[article_id -> bool], match theo idx có kiểm chứng
 # ===========================================================================
 
-def triage_articles(articles: List[Article], client: Groq) -> Dict[str, bool]:
+def triage_articles(articles: List[Article], client: OpenAI) -> Dict[str, bool]:
     """
     Trả về dict {article.id: high_impact?}. Anti-miss:
       - Bài LLM bỏ quên (idx không có trong response) → True (cho qua 70B).
@@ -105,18 +116,27 @@ def triage_articles(articles: List[Article], client: Groq) -> Dict[str, bool]:
     items = [{"idx": i, "title": a.title} for i, a in enumerate(articles)]
     fallback_all_true = {a.id: True for a in articles}
 
-    try:
-        response = client.chat.completions.create(
-            messages=[
-                {"role": "system", "content": TRIAGE_PROMPT},
-                {"role": "user", "content": json.dumps(items)},
-            ],
-            model=FAST_MODEL,
-            response_format={"type": "json_object"},
-        )
-        data = json.loads(response.choices[0].message.content)
-    except Exception as e:
-        logger.error("Triage error → fallback anti-miss (all high_impact): %s", e)
+    models_to_try = [FAST_MODEL]
+    if BACKUP_MODEL and BACKUP_MODEL != FAST_MODEL:
+        models_to_try.append(BACKUP_MODEL)
+
+    data = None
+    for model_name in models_to_try:
+        try:
+            response = client.chat.completions.create(
+                messages=[
+                    {"role": "system", "content": TRIAGE_PROMPT},
+                    {"role": "user", "content": json.dumps(items)},
+                ],
+                model=model_name,
+                response_format={"type": "json_object"},
+            )
+            data = json.loads(response.choices[0].message.content)
+            break
+        except Exception as e:
+            logger.error("Triage error với model %s: %s", model_name, e)
+    if data is None:
+        logger.error("Triage hết model khả dụng → fallback anti-miss (all high_impact).")
         return fallback_all_true
 
     raw_results = data.get("results")
@@ -170,7 +190,7 @@ def _classify_exception(exc: BaseException) -> str:
     return _BatchOutcome.TRANSIENT_FAIL  # mặc định "đáng thử lại 1 lần" trừ khi rõ structural
 
 
-def analyze_articles_batch(articles: List[Article], client: Groq) -> Tuple[str, List[Article]]:
+def analyze_articles_batch(articles: List[Article], client: OpenAI) -> Tuple[str, List[Article]]:
     """
     Phân tích batch bằng 70B.
 
@@ -192,14 +212,20 @@ def analyze_articles_batch(articles: List[Article], client: Groq) -> Tuple[str, 
     raw_content = ""
     raw_data: dict = {}
 
-    for attempt in range(ANALYZE_TRANSIENT_RETRIES + 1):
+    if BACKUP_MODEL and BACKUP_MODEL != POWER_MODEL:
+        # Có model dự phòng: primary fail (kể cả structural) → đổi model ngay, không backoff.
+        attempt_models = [POWER_MODEL, BACKUP_MODEL]
+    else:
+        attempt_models = [POWER_MODEL] * (ANALYZE_TRANSIENT_RETRIES + 1)
+
+    for attempt, model_name in enumerate(attempt_models):
         try:
             response = client.chat.completions.create(
                 messages=[
                     {"role": "system", "content": SYSTEM_PROMPT_BATCH},
                     {"role": "user", "content": json.dumps(batch_input)},
                 ],
-                model=POWER_MODEL,
+                model=model_name,
                 temperature=0.0,
                 response_format={"type": "json_object"},
             )
@@ -210,16 +236,21 @@ def analyze_articles_batch(articles: List[Article], client: Groq) -> Tuple[str, 
             last_exc = e
             kind = _classify_exception(e)
             logger.warning(
-                "Batch analyze attempt %d failed (%s): %s",
-                attempt + 1, kind, e,
+                "Batch analyze attempt %d (model=%s) failed (%s): %s",
+                attempt + 1, model_name, kind, e,
             )
-            if kind == _BatchOutcome.STRUCTURAL_FAIL:
-                # Structural error: retry vô ích trừ khi prompt thay đổi.
+            is_last = attempt == len(attempt_models) - 1
+            next_model = None if is_last else attempt_models[attempt + 1]
+            if kind == _BatchOutcome.STRUCTURAL_FAIL and next_model == model_name:
+                # Structural error: retry cùng model vô ích trừ khi prompt thay đổi.
                 return _BatchOutcome.STRUCTURAL_FAIL, []
-            if attempt < ANALYZE_TRANSIENT_RETRIES:
+            if is_last:
+                if kind == _BatchOutcome.STRUCTURAL_FAIL:
+                    return _BatchOutcome.STRUCTURAL_FAIL, []
+                return _BatchOutcome.TRANSIENT_FAIL, []
+            if next_model == model_name:
                 time.sleep(ANALYZE_TRANSIENT_BACKOFF_S * (attempt + 1))
-                continue
-            return _BatchOutcome.TRANSIENT_FAIL, []
+            continue
 
     results = raw_data.get("results", []) if isinstance(raw_data, dict) else []
     if not isinstance(results, list):
@@ -300,7 +331,7 @@ def analyze_articles_batch(articles: List[Article], client: Groq) -> Tuple[str, 
     return _BatchOutcome.OK, missing
 
 
-def analyze_article(article: Article, client: Groq) -> bool:
+def analyze_article(article: Article, client: OpenAI) -> bool:
     """Hỗ trợ luồng cũ bằng cách gọi batch size 1; trả True nếu OK."""
     outcome, _ = analyze_articles_batch([article], client)
     return outcome == _BatchOutcome.OK

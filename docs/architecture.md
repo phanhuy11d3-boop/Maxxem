@@ -1,6 +1,6 @@
 # Architecture — CryptoSentinel (trading-grade pipeline)
 
-> Pipeline mặc định: **legacy linear** trong `main.py`. Chế độ `python main.py --agentic` dùng `agentic_runtime.py` (cùng storage + Groq), có fallback về legacy nếu lỗi nặng.
+> Pipeline mặc định: **legacy linear** trong `main.py`. Chế độ `python main.py --agentic` dùng `agentic_runtime.py` (cùng storage + LLM), có fallback về legacy nếu lỗi nặng.
 
 Tài liệu này thay cho `implementation_plan.md` (đã gỡ): mô tả **trạng thái hiện tại** của code và DB.
 
@@ -58,7 +58,7 @@ main.py
   ├── scrapers/generic_rss.py ──► models/article.py
   ├── scrapers/fast_signals.py ─► models/article.py
   ├── storage/postgres.py ─────► models/article.py
-  ├── processors/insight_extractor.py ─► models/article.py (+ Groq)
+  ├── processors/insight_extractor.py ─► models/article.py (+ LLM gateway)
   └── utils/notifier.py ───────► models/article.py (+ Telegram HTTP)
 ```
 
@@ -129,12 +129,14 @@ CREATE TABLE IF NOT EXISTS articles (
 
 ---
 
-## 5. Groq / LLM
+## 5. LLM (gateway OpenAI-compatible)
+
+Cấu hình qua env: `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL` (tùy chọn `LLM_MODEL_FAST`/`LLM_MODEL_POWER` để tier hóa). Trên Actions, `LLM_BASE_URL` phải là URL public.
 
 | Bước | Model | Hành vi |
 |---|---|---|
-| Triage | `llama-3.1-8b-instant` | Chỉ **Tier-2**. Input JSON `[{idx, title}]`. Output `results` có `idx` + `high_impact`. Parser build **`Dict[str, bool]`** theo **`Article.id`**. Anti-miss: exception hoặc thiếu quá ngưỡng → coi mọi bài high-impact |
-| Analyze | `llama-3.3-70b-versatile` | Batch JSON, `response_format=json_object`. Thiếu ID trong batch → đánh neutral + `low_confidence` + processed (Vector 3b) |
+| Triage | `FAST_MODEL` | Chỉ **Tier-2**. Input JSON `[{idx, title}]`. Output `results` có `idx` + `high_impact`. Parser build **`Dict[str, bool]`** theo **`Article.id`**. Anti-miss: exception hoặc thiếu quá ngưỡng → coi mọi bài high-impact |
+| Analyze | `POWER_MODEL` | Batch JSON, `response_format=json_object`. Thiếu ID trong batch → đánh neutral + `low_confidence` + processed (Vector 3b) |
 
 `BatchOutcome`: **TRANSIENT_FAIL** (rate limit/network) → `increment_retry` cả chunk; **STRUCTURAL_FAIL** (JSON/schema) → không bump retry + admin alert.
 
@@ -146,7 +148,7 @@ File: `.github/workflows/scraper.yml`
 
 - `cron: '* * * * *'`
 - `concurrency: cryptosentinel-scraper`, `cancel-in-progress: false`
-- Secrets / env tiêu biểu: `DATABASE_URL`, `GROQ_API_KEY`, `BOT_TOKEN`, `CHAT_ID`, optional `UW_API_KEY`, `ARKHAM_API_KEY`, `PREMIUM_CHAT_ID`, `ADMIN_CHAT_ID`, `HEARTBEAT_CHAT_ID`, `ENABLE_OPS_TELEMETRY`.
+- Secrets / env tiêu biểu: `DATABASE_URL`, `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL`, `BOT_TOKEN`, `CHAT_ID`, optional `UW_API_KEY`, `ARKHAM_API_KEY`, `PREMIUM_CHAT_ID`, `ADMIN_CHAT_ID`, `HEARTBEAT_CHAT_ID`, `ENABLE_OPS_TELEMETRY`.
 
 ---
 
@@ -160,7 +162,7 @@ File: `.github/workflows/scraper.yml`
 | `storage/postgres.py` | Pool, schema, dedup, outbox |
 | `scrapers/generic_rss.py` | RSS + gọi `fetch_fast_signals()` |
 | `scrapers/fast_signals.py` | Fast API sources (optional keys) |
-| `processors/insight_extractor.py` | Groq triage + batch + error class |
+| `processors/insight_extractor.py` | LLM triage + batch + error class |
 | `utils/notifier.py` | Telegram, SLA check, telemetry guards |
 | `config/sources.yaml` | Danh sách RSS (tier bằng section comment) |
 | `.github/workflows/scraper.yml` | Scheduler |

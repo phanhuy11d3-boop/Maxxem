@@ -1,13 +1,13 @@
 # CryptoSentinel
 
-Thu thập tin crypto nhanh → phân tích Groq (8B triage + 70B batch) → phân phối Telegram **trading-grade**: cadence 1 phút, stale 30 phút, outbox Telegram, recall-first (nhãn `[?]` low confidence thay vì im lặng).
+Thu thập tin crypto nhanh → phân tích LLM tiered (triage nhanh + deep batch) → phân phối Telegram **trading-grade**: cadence 1 phút, stale 30 phút, outbox Telegram, recall-first (nhãn `[?]` low confidence thay vì im lặng).
 
 ## Stack
 
 | Thành phần | Công nghệ |
 |---|---|
 | Runtime | Python 3.11+ |
-| LLM | Groq (`llama-3.1-8b-instant`, `llama-3.3-70b-versatile`) |
+| LLM | Gateway OpenAI-compatible (`LLM_BASE_URL` + `LLM_MODEL`, tùy chọn `LLM_MODEL_FAST`/`LLM_MODEL_POWER`) |
 | DB | Supabase / PostgreSQL (`storage/postgres.py`, connection pool) |
 | Scheduler | GitHub Actions **`cron: * * * * *`** (mỗi phút) |
 | Output | Telegram Bot API |
@@ -57,7 +57,7 @@ Xem **`.env.example`**. Tóm tắt:
 | Biến | Mô tả |
 |---|---|
 | `DATABASE_URL` | URI PostgreSQL Supabase |
-| `GROQ_API_KEY` | Groq |
+| `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL` | LLM gateway OpenAI-compatible (URL phải public khi chạy trên Actions) |
 | `BOT_TOKEN` | Telegram bot |
 | `CHAT_ID` | Kênh/ group **signal** |
 | `PREMIUM_CHAT_ID` | Tùy chọn |

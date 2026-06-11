@@ -19,7 +19,7 @@ if env_path.exists():
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from processors.insight_extractor import (
-    get_groq_client, SYSTEM_PROMPT_BATCH, POWER_MODEL, FAST_MODEL, TRIAGE_PROMPT,
+    get_llm_client, SYSTEM_PROMPT_BATCH, POWER_MODEL, FAST_MODEL, TRIAGE_PROMPT,
 )
 
 
@@ -45,7 +45,7 @@ def main() -> None:
     if not rows:
         print("Khong tim thay bai phu hop."); return
 
-    client = get_groq_client()
+    client = get_llm_client()
 
     print("=" * 72)
     print("Goi 70B model truc tiep voi 5 bai 'ro rang co the actionable'")

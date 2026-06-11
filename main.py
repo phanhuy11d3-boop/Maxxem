@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Tuple
 
-from groq import Groq
+from openai import OpenAI
 
 from storage.postgres import (
     init_db, upsert_article, get_unprocessed, mark_processed_with_tg,
@@ -28,7 +28,7 @@ from storage.postgres import (
 )
 from scrapers.generic_rss import scrape_all_feeds
 from processors.insight_extractor import (
-    get_groq_client, triage_articles, analyze_articles_batch, BatchOutcome,
+    get_llm_client, triage_articles, analyze_articles_batch, BatchOutcome,
 )
 from models.article import MarketImpact
 from utils.notifier import send_telegram, send_heartbeat, send_admin_alert
@@ -37,12 +37,13 @@ from utils.notifier import send_telegram, send_heartbeat, send_admin_alert
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Kích thước mỗi lần gọi Groq API (rate-limit safe). Pipeline sẽ lặp qua toàn bộ backlog.
+# Kích thước mỗi lần gọi LLM API (rate-limit safe). Pipeline sẽ lặp qua toàn bộ backlog.
 MAX_BATCH_SIZE = 20
 LOW_CONF_SENTIMENT_ABS_THRESHOLD = 0.25
 FAST_SIGNAL_SOURCES = {"Watcher.Guru", "Lookonchain", "UnusualWhales", "Arkham Alerts"}
 TIER1_SOURCES = {
     "Blockworks", "CoinDesk", "Cointelegraph", "Unchained Crypto",
+    "CryptoSlate", "SEC Press Releases",
     *FAST_SIGNAL_SOURCES,
 }
 
@@ -99,7 +100,7 @@ def _dispatch_tg_queue(max_attempts: int = 3) -> Tuple[int, int, int]:
 
 
 def _process_chunk(
-    chunk: list, groq_client: Groq
+    chunk: list, llm_client: OpenAI
 ) -> Tuple[int, int, int, int, int]:
     """
     Xử lý một chunk bài qua Triage → Batch Analysis → Telegram.
@@ -119,7 +120,7 @@ def _process_chunk(
     high_impact = list(tier1)
     if tier2:
         logger.info("   -> Triage %s bài Tier-2...", len(tier2))
-        triage_map = triage_articles(tier2, groq_client)  # Dict[id -> bool]
+        triage_map = triage_articles(tier2, llm_client)  # Dict[id -> bool]
         for article in tier2:
             high_impact.append(article)
             if not triage_map.get(article.id, True):
@@ -129,7 +130,7 @@ def _process_chunk(
         len(tier1), len(tier2), len(low_conf_ids),
     )
 
-    outcome, missing = analyze_articles_batch(high_impact, groq_client)
+    outcome, missing = analyze_articles_batch(high_impact, llm_client)
 
     if outcome == BatchOutcome.STRUCTURAL_FAIL:
         # JSON malformed / contract vi phạm — retry vô ích, chỉ lãng phí token.
@@ -271,9 +272,9 @@ def run_legacy_pipeline() -> None:
         if not unprocessed:
             logger.info("Không có bài báo nào cần xử lý AI.")
         else:
-            groq_client = get_groq_client()
-            if not groq_client:
-                logger.error("Không thể khởi tạo Groq client. Bỏ qua phase AI.")
+            llm_client = get_llm_client()
+            if not llm_client:
+                logger.error("Không thể khởi tạo LLM client. Bỏ qua phase AI.")
                 llm_errors += total_unprocessed
                 for article in unprocessed:
                     increment_retry(article.id)
@@ -282,7 +283,7 @@ def run_legacy_pipeline() -> None:
                 for idx, chunk_start in enumerate(range(0, total_unprocessed, MAX_BATCH_SIZE), 1):
                     chunk = unprocessed[chunk_start:chunk_start + MAX_BATCH_SIZE]
                     logger.info(f"   Chunk {idx}/{num_chunks} ({len(chunk)} bài)...")
-                    c_ai, c_llm, c_tg, c_act, c_ok = _process_chunk(chunk, groq_client)
+                    c_ai, c_llm, c_tg, c_act, c_ok = _process_chunk(chunk, llm_client)
                     ai_processed += c_ai
                     llm_errors += c_llm
                     tg_errors += c_tg

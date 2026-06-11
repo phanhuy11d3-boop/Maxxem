@@ -6,6 +6,10 @@ feeds:
   # --- Tier 1: Tin tức chính thống ---
   # The Block (theblock.co) bị thay bằng Blockworks vì theblock.co trả HTTP 403
   # cho mọi RSS scraper từ 2026-05 (chặn bot server-side, không thể bypass bền vững).
+  # ⚠️ 2026-06-10: Feed Blockworks STALE — entry mới nhất 2026-01-07 (site pivot sang
+  # "data and software platform", blockworks.co redirect → blockworks.com, /news trả 403
+  # cho bot). Feed vẫn 200 nên giữ lại phòng khi resume, nhưng Tier-1 đang thiếu 1 nguồn
+  # thay thế thật sự cho The Block — operator cần chọn nguồn mới.
   - name: "Blockworks"
     url: "https://blockworks.co/feed"
   - name: "CoinDesk"
@@ -14,6 +18,12 @@ feeds:
     url: "https://cointelegraph.com/rss"
   - name: "Unchained Crypto"
     url: "https://unchainedcrypto.com/feed/"
+  # CryptoSlate thêm 2026-06-10: nguồn Tier-1 thay thế thật sự cho The Block/Blockworks.
+  - name: "CryptoSlate"
+    url: "https://cryptoslate.com/feed/"
+  # SEC: volume thấp (~vài bài/tuần) nhưng tin nào cũng có thể làm giá biến động mạnh.
+  - name: "SEC Press Releases"
+    url: "https://www.sec.gov/news/pressreleases.rss"
 
   # --- Tier 2: Nguồn chất lượng cao bổ sung ---
   - name: "Decrypt"
@@ -24,5 +34,24 @@ feeds:
     url: "https://bitcoinmagazine.com/.rss/full/"
   - name: "Protos"
     url: "https://protos.com/feed/"
-  - name: "DL News"
-    url: "https://www.dlnews.com/arc/outboundfeeds/rss/"
+  # Batch 2026-06-10: 8 nguồn thiên tin biến động giá (market/TA/regulatory), đều qua 8B triage.
+  # BeInCrypto bị loại khi thẩm định (feed sống nhưng toàn bài PR/sponsored).
+  # Wu Blockchain substack (stale 2021), rekt.news (HTTP 500), Glassnode (403 bot-block) đều BAD.
+  - name: "U.Today"
+    url: "https://u.today/rss"
+  - name: "CryptoPotato"
+    url: "https://cryptopotato.com/feed/"
+  - name: "crypto.news"
+    url: "https://crypto.news/feed/"
+  - name: "The Daily Hodl"
+    url: "https://dailyhodl.com/feed/"
+  - name: "CoinGape"
+    url: "https://coingape.com/feed/"
+  - name: "NewsBTC"
+    url: "https://www.newsbtc.com/feed/"
+  - name: "Bitcoinist"
+    url: "https://bitcoinist.com/feed/"
+  - name: "AMBCrypto"
+    url: "https://ambcrypto.com/feed/"
+  # DL News (dlnews.com) gỡ 2026-06-10: tòa soạn đóng cửa vĩnh viễn — bài cuối cùng
+  # "DL News is closing" đăng 2026-05-07. Feed vẫn serve 30 bài cũ (tombstone), vô giá trị.

@@ -8,6 +8,10 @@ on:
 jobs:
   scrape:
     runs-on: ubuntu-latest
+    # GH Actions không tôn trọng cron mỗi-phút (thực tế 1.5–4.5h/lần). Workaround:
+    # mỗi run là một "ca trực" tự loop ~5h30 (dưới trần 6h của job), mỗi phút một vòng.
+    # Run kế tiếp xếp hàng nhờ concurrency group → hết ca là vào thay, phủ gần kín 24/7.
+    timeout-minutes: 350
     concurrency:
       group: cryptosentinel-scraper
       cancel-in-progress: false
@@ -24,11 +28,28 @@ jobs:
       - name: Install Dependencies
         run: pip install -r requirements.txt
 
-      - name: Run CryptoSentinel Pipeline
-        run: python main.py
+      - name: Run CryptoSentinel Pipeline (loop ~5h30, mỗi phút một vòng)
+        run: |
+          END=$((SECONDS + 19800))
+          i=0
+          while [ "$SECONDS" -lt "$END" ]; do
+            i=$((i + 1))
+            t0=$SECONDS
+            echo "=== vòng $i — $(date -u '+%Y-%m-%d %H:%M:%S') UTC ==="
+            python main.py || echo "::warning::vòng $i lỗi (exit $?) — tiếp tục ca trực"
+            d=$((SECONDS - t0))
+            if [ "$d" -lt 60 ]; then sleep $((60 - d)); fi
+          done
+          echo "Hết ca sau $i vòng."
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          # Ca đêm dùng Groq (endpoint public, OpenAI-compatible). Chỉ key là secret;
+          # base URL + tên model để thẳng ở đây cho dễ đổi. Ca ngày trên máy operator
+          # dùng 9Router localhost qua .env — hai ca chung DB nên không trùng tin.
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_BASE_URL: https://api.groq.com/openai/v1
+          LLM_MODEL: llama-3.3-70b-versatile
+          LLM_MODEL_FAST: llama-3.1-8b-instant
           UW_API_KEY: ${{ secrets.UW_API_KEY }}
           ARKHAM_API_KEY: ${{ secrets.ARKHAM_API_KEY }}
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}

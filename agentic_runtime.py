@@ -21,7 +21,7 @@ from models.article import Article, MarketImpact
 from processors.insight_extractor import (
     BatchOutcome,
     analyze_articles_batch,
-    get_groq_client,
+    get_llm_client,
     triage_articles,
 )
 from scrapers.generic_rss import scrape_all_feeds
@@ -42,6 +42,7 @@ LOW_CONF_SENTIMENT_ABS_THRESHOLD = 0.25
 FAST_SIGNAL_SOURCES = {"Watcher.Guru", "Lookonchain", "UnusualWhales", "Arkham Alerts"}
 TIER1_SOURCES = {
     "Blockworks", "CoinDesk", "Cointelegraph", "Unchained Crypto",
+    "CryptoSlate", "SEC Press Releases",
     *FAST_SIGNAL_SOURCES,
 }
 
@@ -115,9 +116,9 @@ def _stage_analyst(ctx: RuntimeContext, stats: PipelineStats, max_batch_size: in
         logger.info("[Analyst] Không có bài cần phân tích.")
         return
 
-    client = get_groq_client()
+    client = get_llm_client()
     if not client:
-        logger.error("[Analyst] Không có Groq client, tăng retry cho queue.")
+        logger.error("[Analyst] Không có LLM client, tăng retry cho queue.")
         stats.llm_errors += total_unprocessed
         for article in unprocessed:
             increment_retry(article.id)

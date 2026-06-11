@@ -21,3 +21,4 @@ Thumbs.db
 
 # Runtime
 storage/state.json
+storage/local_cron.log*

@@ -27,10 +27,10 @@ jobs:
       - name: "[Security] No hardcoded API keys"
         run: |
           if grep -rn "gsk_" --include="*.py" .; then
-            echo "❌ FAIL: Phát hiện Groq API key bị hardcode trong .py file!"
+            echo "❌ FAIL: Phát hiện API key bị hardcode trong .py file!"
             exit 1
           fi
-          echo "✅ PASS: Không có Groq API key bị hardcode."
+          echo "✅ PASS: Không có API key bị hardcode."
 
       - name: "[Security] No hardcoded DATABASE_URL"
         run: |

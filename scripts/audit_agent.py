@@ -49,7 +49,7 @@ class MonitorAgent:
 
     def _check_environment(self):
         logger.info("Kiểm tra Environment Variables...")
-        required_keys = ["DATABASE_URL"] # Không check GROQ và BOT_TOKEN ở CI để tránh lộ
+        required_keys = ["DATABASE_URL"] # Không check LLM key và BOT_TOKEN ở CI để tránh lộ
         for key in required_keys:
             if not os.environ.get(key):
                 logger.warning(f"Thiếu {key}. Nếu chạy trên CI/CD, có thể gây lỗi DB.")
