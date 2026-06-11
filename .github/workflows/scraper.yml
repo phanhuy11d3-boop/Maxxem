@@ -50,6 +50,9 @@ jobs:
           LLM_BASE_URL: https://api.groq.com/openai/v1
           LLM_MODEL: llama-3.3-70b-versatile
           LLM_MODEL_FAST: llama-3.1-8b-instant
+          # Free tier 70B chỉ ~100k token/ngày — ca đêm sẽ chạm trần giữa chừng.
+          # 8B có quota ~500k token/ngày làm lưới đỡ: 70B 429 → failover tức thì.
+          LLM_MODEL_BACKUP: llama-3.1-8b-instant
           UW_API_KEY: ${{ secrets.UW_API_KEY }}
           ARKHAM_API_KEY: ${{ secrets.ARKHAM_API_KEY }}
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
