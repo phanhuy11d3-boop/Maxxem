@@ -47,6 +47,11 @@ def main():
         print(f"preflight: PASS WITH WARNINGS - optional failed: {', '.join(failed_optional)}")
     else:
         print("preflight: ALL PASS")
+    # PASS = "pipeline chạy không crash", KHÔNG phải "hệ thống đúng".
+    # Nó không chứng minh: signal phân loại đúng, cadence đủ phủ, nguồn còn
+    # sống, hay không miss tin. Các câu đó thuộc cadence-check / health-sweep.
+    print("preflight: scope = does-it-run only (not signal quality, "
+          "not cadence coverage, not source health)")
 
 
 if __name__ == "__main__":

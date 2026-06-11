@@ -36,9 +36,17 @@ GROUPS = {
 def main() -> None:
     blocks = [a for a in sys.argv[1:] if a != "--block"]
     try:
-        payload = json.load(sys.stdin)
+        # utf-8-sig: chịu được BOM (vd khi payload đi qua pipe PowerShell).
+        payload = json.loads(sys.stdin.buffer.read().decode("utf-8-sig"))
     except Exception:
-        sys.exit(0)  # malformed/missing payload: never block blindly
+        # Guard an ninh phải fail-CLOSED: payload không đọc được nghĩa là
+        # không thể xác minh lệnh sắp chạy -> chặn, không cho chạy mù.
+        print(
+            "guard_readonly: cannot parse hook payload - failing CLOSED. "
+            "This read-only agent must not run shell commands unverified.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
     command = (payload.get("tool_input") or {}).get("command") or ""
     for name in blocks:
         entry = GROUPS.get(name)

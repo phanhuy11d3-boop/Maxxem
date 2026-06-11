@@ -28,6 +28,19 @@ py -3 scripts/query_recent_non_neutral.py --limit 10 --max-age-minutes 30   # la
 ```
 For ad-hoc checks, write a one-off read-only script that borrows from `_get_pool()` in `storage/postgres.py` — never open a raw `psycopg2.connect()`.
 
+## Limits of evidence — what your report may and may not claim
+
+The outbox state machine is fully auditable, so you CAN prove: every processed
+actionable row's delivery state, delivery latency (section 7 of
+`diagnose_telegram.py`: publish → `tg_last_attempt_at` percentiles, rows sent
+past the 30-min window, `expired` count), and retry health. You CANNOT prove
+"no news was missed": articles that died stale before processing (cadence
+gaps) or were misclassified neutral never enter the outbox and leave no trace
+here. Word your verdict accordingly — "outbox/delivery: no silent fail" is
+provable; "no miss" is not. Latency red flags: any sent row > 30 min, or
+`expired` > 0, is a delivery-side violation — report it as BROKEN, not as an
+anomaly.
+
 `scripts/unstick_retry.py` and any SQL write (`INSERT`/`UPDATE`/`DELETE`/...) are hard-blocked for this agent by the `guard_readonly` PreToolUse hook. You are strictly read-only: report what needs writing (e.g. a backfill statement) and let the main session run it. When a shell command is blocked for containing an SQL keyword you only meant to search for, use the Grep tool instead.
 
 ## Core Responsibilities

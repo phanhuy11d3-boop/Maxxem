@@ -22,6 +22,9 @@ import sys
 import pathlib
 from typing import Iterable
 
+# Console Windows mặc định cp1252 — title chứa CJK/emoji sẽ crash giữa report.
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 # Cho phép chạy từ root project
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -176,6 +179,48 @@ def main() -> None:
                 """,
             )
             print(f"  Bai bi 70B model phan tich -> ACTIONABLE: {rows[0]['n']}")
+
+            _print_section("7. DO TRE GIAO TIN (publish -> tg_last_attempt_at, bai da sent)")
+            rows = _run(
+                cur,
+                """
+                SELECT
+                  COUNT(*) AS n,
+                  percentile_cont(0.5)  WITHIN GROUP (ORDER BY lat) AS p50,
+                  percentile_cont(0.9)  WITHIN GROUP (ORDER BY lat) AS p90,
+                  percentile_cont(0.99) WITHIN GROUP (ORDER BY lat) AS p99,
+                  MAX(lat) AS max
+                FROM (
+                  SELECT EXTRACT(EPOCH FROM (
+                    tg_last_attempt_at - COALESCE(published_at, scraped_at)
+                  )) / 60.0 AS lat
+                  FROM articles
+                  WHERE tg_status = 'sent' AND tg_last_attempt_at IS NOT NULL
+                ) t
+                """,
+            )
+            r = rows[0]
+            if r["n"]:
+                print(f"  Bai sent co timestamp            : {r['n']}")
+                print(f"  p50 / p90 / p99 / max (phut)     : "
+                      f"{r['p50']:.1f} / {r['p90']:.1f} / {r['p99']:.1f} / {r['max']:.1f}")
+            else:
+                print("  (chua co bai sent nao co tg_last_attempt_at)")
+            rows = _run(
+                cur,
+                """
+                SELECT COUNT(*) AS n FROM articles
+                WHERE tg_status = 'sent' AND tg_last_attempt_at IS NOT NULL
+                  AND tg_last_attempt_at - COALESCE(published_at, scraped_at)
+                      > INTERVAL '30 minutes'
+                """,
+            )
+            print(f"  Bai sent VUOT cua so 30 phut     : {rows[0]['n']}  <-- >0 = gui cham thanh vi pham")
+            rows = _run(
+                cur,
+                "SELECT COUNT(*) AS n FROM articles WHERE tg_status = 'expired'",
+            )
+            print(f"  Bai actionable chet cho (expired): {rows[0]['n']}  <-- >0 = silent fail trong outbox")
 
     finally:
         conn.close()

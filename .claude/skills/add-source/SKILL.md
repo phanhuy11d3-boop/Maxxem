@@ -1,7 +1,7 @@
 ---
 name: add-source
 description: Add a new RSS/news source to CryptoSentinel following the full validation procedure (validate feed, edit sources.yaml, wire tier membership in BOTH main.py and agentic_runtime.py, test parse, run unit tests). Use when adding, replacing, or evaluating a news feed.
-argument-hint: [feed-url] [tier 0|1|2]
+argument-hint: "[feed-url] [tier 0|1|2]"
 ---
 
 # Add Source — full procedure
@@ -36,7 +36,7 @@ Remember: Tier-0/Tier-1 bypass triage and always hit the 70B analyzer (recall-fi
 ## 4. Test a real parse of the new feed
 
 ```powershell
-py -3 -c "from scrapers.generic_rss import fetch_all; arts = [a for a in fetch_all() if a.source == '<name>']; print(len(arts)); [print(a.published_at, a.title[:70]) for a in arts[:3]]"
+py -3 -c "from scrapers.generic_rss import scrape_all_feeds; arts = [a for a in scrape_all_feeds() if a.source == '<name>']; print(len(arts)); [print(a.published_at, a.title[:70]) for a in arts[:3]]"
 ```
 
 (Adapt to the actual public function in `scrapers/generic_rss.py` if it differs.) Confirm: articles parse into the `Article` model, timestamps are timezone-aware UTC, titles are clean.

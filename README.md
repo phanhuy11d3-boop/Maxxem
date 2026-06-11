@@ -9,14 +9,14 @@ Thu thập tin crypto nhanh → phân tích LLM tiered (triage nhanh + deep batc
 | Runtime | Python 3.11+ |
 | LLM | Gateway OpenAI-compatible (`LLM_BASE_URL` + `LLM_MODEL`, tùy chọn `LLM_MODEL_FAST`/`LLM_MODEL_POWER`) |
 | DB | Supabase / PostgreSQL (`storage/postgres.py`, connection pool) |
-| Scheduler | GitHub Actions **`cron: * * * * *`** (mỗi phút) |
+| Scheduler | Hai ca: **Task Scheduler local** (ngày, cadence 1 phút) + **GH Actions shift loop** (đêm, mỗi run là ca ~5h30 tự loop mỗi phút — GH không tôn trọng cron mỗi-phút) |
 | Output | Telegram Bot API |
 | Ingest | `feedparser` (RSS) + `scrapers/fast_signals.py` (API tùy chọn) |
 
 ## Luồng tóm tắt
 
 ```text
-Actions (1m) → main.py
+Shift (local 1m / GH loop) → main.py
   → expire + dispatch TG backlog
   → scrape (RSS + optional fast APIs)
   → upsert / dedup Postgres

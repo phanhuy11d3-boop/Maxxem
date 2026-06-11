@@ -12,6 +12,7 @@ import argparse
 import json
 import os
 from datetime import date, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -34,7 +35,11 @@ def load_env() -> None:
 def to_jsonable(value: Any) -> Any:
     if isinstance(value, (datetime, date)):
         return value.isoformat()
-    return value
+    if isinstance(value, Decimal):
+        return float(value)
+    # json.dumps gọi default cho MỌI type không serialize được; trả lại
+    # nguyên object (vd Decimal) sẽ ném "Circular reference detected".
+    return str(value)
 
 
 def main() -> None:
