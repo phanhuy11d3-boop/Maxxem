@@ -23,7 +23,7 @@ from openai import OpenAI
 
 from storage.postgres import (
     init_db, upsert_articles_batch, get_unprocessed, mark_processed_with_tg,
-    increment_retry, get_tg_dispatch_queue, mark_tg_attempt, expire_stale_tg_queue,
+    increment_retry, get_tg_dispatch_queue, claim_tg_send_slot, mark_tg_attempt, expire_stale_tg_queue,
     get_outbox_kpis,
 )
 from scrapers.generic_rss import scrape_all_feeds
@@ -89,6 +89,9 @@ def _dispatch_tg_queue(max_attempts: int = 3) -> Tuple[int, int, int]:
 
     logger.info("Dispatch TG queue: %s bài pending/failed.", len(queue))
     for article in queue:
+        # 2 ca (local + GH) cùng quét outbox — chỉ kẻ claim được mới gửi.
+        if not claim_tg_send_slot(article.id):
+            continue
         actionable += 1
         sent = send_telegram(article)
         mark_tg_attempt(article.id, success=sent, error=None if sent else "send_failed")

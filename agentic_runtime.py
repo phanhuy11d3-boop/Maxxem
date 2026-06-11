@@ -28,6 +28,7 @@ from scrapers.generic_rss import scrape_all_feeds
 from storage.postgres import (
     expire_stale_tg_queue,
     get_tg_dispatch_queue,
+    claim_tg_send_slot,
     get_unprocessed,
     increment_retry,
     init_db,
@@ -242,6 +243,9 @@ def _stage_broadcaster(ctx: RuntimeContext, stats: PipelineStats) -> None:
     seen_ids = set()
     for article in failed_articles:
         seen_ids.add(article.id)
+        # 2 ca (local + GH) cùng quét outbox — chỉ kẻ claim được mới gửi.
+        if not claim_tg_send_slot(article.id):
+            continue
         stats.actionable += 1
         sent = send_telegram(article)
         mark_tg_attempt(article.id, sent, None if sent else "send_failed")
@@ -254,6 +258,8 @@ def _stage_broadcaster(ctx: RuntimeContext, stats: PipelineStats) -> None:
     for article in ctx.actionable_articles:
         if article.id in seen_ids:
             # Đã được retry từ dispatch queue ở vòng trên — tránh gửi double.
+            continue
+        if not claim_tg_send_slot(article.id):
             continue
         stats.actionable += 1
         sent = send_telegram(article)

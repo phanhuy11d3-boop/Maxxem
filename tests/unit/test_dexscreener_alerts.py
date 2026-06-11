@@ -82,13 +82,18 @@ def test_dex_alert_dump_uses_blood_emoji_and_low_liq_warning():
     assert "⚠️ Low liquidity — DYOR" in rendered
 
 
-def test_dex_alert_falls_back_to_news_style_when_summary_unparseable():
+def test_dex_alert_never_falls_back_to_news_uniform():
     article = build_alert_article(_pair(12.4), "h1", 12.4, {"cooldown_minutes": 15})
     broken = article.model_copy(update={"summary": "corrupted"})
     rendered = broken.format_telegram_html()
 
-    # Vẫn gửi được, không crash — quay về template news với footer DEX.
-    assert "Direct market data from DEXScreener" in rendered
+    # Summary hỏng → bản tối giản nhưng VẪN là kiểu bảng giá, không bao giờ
+    # quay về đồng phục tin tức (Sentiment/Key/IMPORTANT/AI-disclaimer).
+    assert rendered.startswith("🚀 <b>")
+    assert "Chart — DEXScreener" in rendered
+    assert "Sentiment" not in rendered
+    assert "IMPORTANT" not in rendered
+    assert "AI-generated" not in rendered
 
 
 def test_news_article_still_renders_sentiment():

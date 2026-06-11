@@ -257,7 +257,7 @@ class Article(BaseModel):
             lines.append(f"Key: \"{self.key_takeaway}\"")
         lines.extend(["", f"Source: {self.url}"])
         lines.append("")
-        lines.append(self._disclaimer())
+        lines.append("⚠️ AI-generated insight. Verify data before trading.")
 
         return "\n".join(lines)
 
@@ -266,12 +266,10 @@ class Article(BaseModel):
         Định dạng gửi Telegram với ``parse_mode: HTML``.
         Escape toàn bộ tiêu đề / takeaway / URL để không bị RSS phá markup (Markdown legacy dễ vỡ vì ``_``, ``*``).
         """
-        # DEX price-move alert có layout bảng giá riêng — con số lên đầu,
-        # không mặc đồng phục tin tức. Fallback news-style nếu summary hỏng.
+        # DEX price-move alert chỉ có layout bảng giá — KHÔNG BAO GIỜ rơi về
+        # đồng phục tin tức. Summary hỏng → bản tối giản vẫn là kiểu bảng giá.
         if self.narrative_tag == "DEX_MOVE":
-            dex_render = self._format_dex_alert_html()
-            if dex_render:
-                return dex_render
+            return self._format_dex_alert_html() or self._format_dex_alert_minimal_html()
 
         sent_at = sent_at or datetime.now(timezone.utc)
         tz_ict = timezone(timedelta(hours=7))
@@ -322,14 +320,8 @@ class Article(BaseModel):
 
         href = html.escape(str(self.url))
         lines.extend(["", f'<a href="{href}">Source link</a>', ""])
-        lines.append(self._disclaimer())
+        lines.append("⚠️ AI-generated insight. Verify data before trading.")
         return "\n".join(lines)
-
-    def _disclaimer(self) -> str:
-        """DEX alert là dữ liệu thị trường trực tiếp, không phải insight do AI viết."""
-        if self.narrative_tag == "DEX_MOVE":
-            return "⚠️ Direct market data from DEXScreener. Verify before trading."
-        return "⚠️ AI-generated insight. Verify data before trading."
 
     _DEX_HORIZON_LABEL = {"m5": "5m", "h1": "1h", "h6": "6h", "h24": "24h"}
 
@@ -401,6 +393,16 @@ class Article(BaseModel):
             lines.append("⚠️ Low liquidity — DYOR")
         lines.extend(["", f'<a href="{href}">📈 Chart — DEXScreener</a>', f"⏱ {obs_ict} ICT"])
         return "\n".join(lines)
+
+    def _format_dex_alert_minimal_html(self) -> str:
+        """Lưới an toàn khi summary không parse được — vẫn là kiểu bảng giá."""
+        arrow = "🚀" if self.market_impact == MarketImpact.BULLISH else "🩸"
+        href = html.escape(str(self.url))
+        return "\n".join([
+            f"{arrow} <b>{html.escape(self.title)}</b>",
+            "",
+            f'<a href="{href}">📈 Chart — DEXScreener</a>',
+        ])
 
 
 # ===========================================================================

@@ -464,12 +464,20 @@ def mark_tg_sent(article_id: str, success: bool) -> None:
         _get_pool().putconn(conn)
 
 
-def mark_tg_attempt(article_id: str, success: bool, error: Optional[str] = None) -> None:
+def claim_tg_send_slot(article_id: str, lease_seconds: int = 180) -> bool:
     """
-    Ghi kết quả một lần gửi Telegram theo state machine:
-      - success=True  -> tg_status='sent',   tg_sent=TRUE,  tg_sent_at=NOW()
-      - success=False -> tg_status='failed', tg_sent=FALSE, tg_last_error=error
-    Đồng thời tăng tg_attempts +1 và ghi tg_last_attempt_at.
+    Optimistic claim chống double-dispatch: 2 ca production (local Task Scheduler
+    + GH Actions loop) cùng quét outbox, cùng thấy một bài 'pending' và cùng gửi
+    → user nhận tin trùng (xảy ra thật 2026-06-11 23:28 ICT với DEX alert WETH h6).
+
+    Claim = bump tg_attempts + đóng dấu tg_last_attempt_at trong MỘT câu UPDATE;
+    row lock của Postgres serialize 2 ca — kẻ thắng được gửi, kẻ thua nhận 0 row
+    và bỏ qua. Lease `lease_seconds` chặn ca kia re-claim trong lúc kẻ thắng còn
+    đang gửi (kể cả khi backoff 429 kéo dài); crash sau claim không kẹt vĩnh viễn:
+    hết lease bài lại claim được, hết cửa sổ 30' thì expire_stale_tg_queue dọn.
+
+    Trả về True nếu giành được quyền gửi. DB lỗi → False (thà chậm một nhịp
+    còn hơn rủi ro gửi trùng).
     """
     conn = _get_pool().getconn()
     try:
@@ -478,7 +486,42 @@ def mark_tg_attempt(article_id: str, success: bool, error: Optional[str] = None)
                 """
                 UPDATE articles
                 SET tg_attempts = COALESCE(tg_attempts, 0) + 1,
-                    tg_last_attempt_at = NOW(),
+                    tg_last_attempt_at = NOW()
+                WHERE id = %s
+                  AND COALESCE(tg_status, CASE WHEN tg_sent IS TRUE THEN 'sent'
+                                               WHEN tg_sent IS FALSE THEN 'failed'
+                                               ELSE 'pending' END) IN ('pending', 'failed')
+                  AND (tg_last_attempt_at IS NULL
+                       OR tg_last_attempt_at < NOW() - %s * INTERVAL '1 second')
+                """,
+                (article_id, lease_seconds),
+            )
+            claimed = cursor.rowcount > 0
+        conn.commit()
+        return claimed
+    except psycopg2.Error as e:
+        conn.rollback()
+        logger.error(f"Lỗi khi claim_tg_send_slot (ID: {article_id}): {e}")
+        return False
+    finally:
+        _get_pool().putconn(conn)
+
+
+def mark_tg_attempt(article_id: str, success: bool, error: Optional[str] = None) -> None:
+    """
+    Ghi kết quả một lần gửi Telegram theo state machine:
+      - success=True  -> tg_status='sent',   tg_sent=TRUE,  tg_sent_at=NOW()
+      - success=False -> tg_status='failed', tg_sent=FALSE, tg_last_error=error
+    tg_attempts do claim_tg_send_slot() tăng lúc giành quyền gửi — KHÔNG tăng
+    lại ở đây để một lần gửi thật = đúng một attempt.
+    """
+    conn = _get_pool().getconn()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE articles
+                SET tg_last_attempt_at = NOW(),
                     tg_last_error = %s,
                     tg_sent = %s,
                     tg_status = %s,
