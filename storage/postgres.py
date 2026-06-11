@@ -21,11 +21,11 @@ import os
 import logging
 import atexit
 from datetime import datetime, timezone, timedelta
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import psycopg2
 from psycopg2 import pool
-from psycopg2.extras import RealDictCursor
+from psycopg2.extras import RealDictCursor, execute_values
 
 from models.article import Article, MarketImpact, normalize_market_impact
 
@@ -185,6 +185,68 @@ def upsert_article(article: Article) -> Optional[bool]:
         return None
     finally:
         _get_pool().putconn(conn)
+
+
+def upsert_articles_batch(articles: List[Article]) -> Tuple[int, int]:
+    """
+    Batch Deduplication Gateway: chèn cả lô bằng execute_values (1-2 round-trip)
+    thay vì N round-trip lẻ — đo thực tế 2026-06-11: ~400 bài × ~0.5s/bài = ~200s/vòng,
+    chiếm 87% thời gian pipeline và ăn gần hết cửa sổ stale 30 phút.
+
+    Trả về (new_count, db_errors). Nếu cả lô fail (psycopg2.Error) → fallback
+    per-article qua upsert_article() để một bài hỏng không nuốt cả lô.
+    """
+    if not articles:
+        return 0, 0
+
+    # ON CONFLICT DO NOTHING cấm cùng một id xuất hiện 2 lần trong cùng câu INSERT
+    # → dedupe nội bộ lô trước, giữ bản đầu tiên.
+    seen: dict = {}
+    for a in articles:
+        if a.id not in seen:
+            seen[a.id] = a
+    unique = list(seen.values())
+
+    rows = [
+        (a.id, a.title, str(a.url), a.source, a.published_at,
+         a.published_from_source, a.summary, a.scraped_at)
+        for a in unique
+    ]
+
+    conn = _get_pool().getconn()
+    try:
+        with conn.cursor() as cursor:
+            returned = execute_values(
+                cursor,
+                '''
+                INSERT INTO articles (
+                    id, title, url, source, published_at, published_from_source, summary, scraped_at, processed, retry_count
+                ) VALUES %s
+                ON CONFLICT (id) DO NOTHING
+                RETURNING id
+                ''',
+                rows,
+                template="(%s, %s, %s, %s, %s, %s, %s, %s, FALSE, 0)",
+                page_size=200,
+                fetch=True,
+            )
+        conn.commit()
+        return len(returned), 0
+    except psycopg2.Error as e:
+        conn.rollback()
+        logger.error(f"Lỗi batch upsert ({len(unique)} bài) → fallback per-article: {e}")
+    finally:
+        _get_pool().putconn(conn)
+
+    new_count = 0
+    db_errors = 0
+    for a in unique:
+        result = upsert_article(a)
+        if result is None:
+            db_errors += 1
+        elif result:
+            new_count += 1
+    return new_count, db_errors
 
 
 def get_unprocessed() -> List[Article]:

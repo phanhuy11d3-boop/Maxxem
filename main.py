@@ -22,7 +22,7 @@ from typing import Optional, Tuple
 from openai import OpenAI
 
 from storage.postgres import (
-    init_db, upsert_article, get_unprocessed, mark_processed_with_tg,
+    init_db, upsert_articles_batch, get_unprocessed, mark_processed_with_tg,
     increment_retry, get_tg_dispatch_queue, mark_tg_attempt, expire_stale_tg_queue,
     get_outbox_kpis,
 )
@@ -247,12 +247,8 @@ def run_legacy_pipeline() -> None:
 
         # Phase 4: Dedup + Lưu DB
         logger.info(f"4. Deduplication... Tổng scraped: {scraped_count}")
-        for article in articles:
-            result = upsert_article(article)
-            if result is None:
-                db_errors += 1
-            elif result:
-                new_count += 1
+        new_count, batch_db_errors = upsert_articles_batch(articles)
+        db_errors += batch_db_errors
         logger.info(f"   -> {new_count} bài mới.")
 
         # Phase 5: AI processing — xử lý TOÀN BỘ queue theo chunks MAX_BATCH_SIZE

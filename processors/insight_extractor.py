@@ -15,6 +15,7 @@ Trading-grade hardening (2026-05-07):
 """
 
 import os
+import re
 import json
 import time
 import logging
@@ -89,6 +90,21 @@ Return ONE JSON object (no markdown, no prose), shape:
 Length of "results" MUST equal length of input."""
 
 
+# Một số model (nhất là 8B fast-tier) bọc JSON trong code-fence ```json ... ```
+# dù đã yêu cầu response_format=json_object → parse thẳng sẽ throw và rơi nhầm
+# vào backup model / fallback anti-miss (mọi bài lên 70B, đốt token vô ích).
+_CODE_FENCE_RE = re.compile(r"^\s*```[a-zA-Z]*\s*(.*?)\s*```\s*$", re.DOTALL)
+
+
+def _parse_llm_json(raw: Optional[str]) -> dict:
+    """json.loads có strip code-fence markdown nếu model lỡ bọc output."""
+    text = (raw or "").strip()
+    m = _CODE_FENCE_RE.match(text)
+    if m:
+        text = m.group(1)
+    return json.loads(text)
+
+
 def get_llm_client() -> Optional[OpenAI]:
     api_key = os.environ.get("LLM_API_KEY")
     base_url = os.environ.get("LLM_BASE_URL")
@@ -131,7 +147,7 @@ def triage_articles(articles: List[Article], client: OpenAI) -> Dict[str, bool]:
                 model=model_name,
                 response_format={"type": "json_object"},
             )
-            data = json.loads(response.choices[0].message.content)
+            data = _parse_llm_json(response.choices[0].message.content)
             break
         except Exception as e:
             logger.error("Triage error với model %s: %s", model_name, e)
@@ -230,7 +246,7 @@ def analyze_articles_batch(articles: List[Article], client: OpenAI) -> Tuple[str
                 response_format={"type": "json_object"},
             )
             raw_content = response.choices[0].message.content or "{}"
-            raw_data = json.loads(raw_content)
+            raw_data = _parse_llm_json(raw_content)
             break
         except Exception as e:
             last_exc = e

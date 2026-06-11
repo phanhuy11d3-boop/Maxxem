@@ -33,7 +33,7 @@ from storage.postgres import (
     init_db,
     mark_processed_with_tg,
     mark_tg_attempt,
-    upsert_article,
+    upsert_articles_batch,
 )
 from utils.notifier import send_admin_alert, send_telegram
 
@@ -93,12 +93,9 @@ def _stage_scout(ctx: RuntimeContext, stats: PipelineStats) -> None:
     articles = scrape_all_feeds()
     stats.scraped_count = len(articles)
 
-    for article in articles:
-        result = upsert_article(article)
-        if result is None:
-            stats.db_errors += 1
-        elif result:
-            stats.new_count += 1
+    new_count, db_errors = upsert_articles_batch(articles)
+    stats.new_count += new_count
+    stats.db_errors += db_errors
     logger.info("[Scout] Scraped=%s | New=%s", stats.scraped_count, stats.new_count)
 
 
