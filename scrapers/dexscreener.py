@@ -196,7 +196,7 @@ def build_alert_article(pair: dict, horizon: str, change_pct: float, cfg: dict, 
         source="DEXScreener",
         published_at=now,
         summary=summary,
-        sentiment=max(-1.0, min(1.0, change_pct / 25.0)),
+        # Không có sentiment: đây là số liệu giá trực tiếp, không phải suy đoán.
         market_impact=impact,
         key_takeaway=key[:300],
         narrative_tag="DEX_MOVE",

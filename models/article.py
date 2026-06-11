@@ -243,20 +243,21 @@ class Article(BaseModel):
         """
         impact_emoji = "📈" if self.market_impact == MarketImpact.BULLISH else "📉"
         impact_label = self.market_impact.value.upper() if self.market_impact else "N/A"
-        sentiment_str = f"{self.sentiment:+.2f}" if self.sentiment is not None else "N/A"
 
         lines = [
             f"{impact_emoji} {impact_label} | {self.source}",
             "",
             self.title,
             "",
-            f"Sentiment: {sentiment_str}",
         ]
+        # DEX alert là số liệu trực tiếp — không có sentiment để hiển thị.
+        if self.sentiment is not None:
+            lines.append(f"Sentiment: {self.sentiment:+.2f}")
         if self.key_takeaway:
             lines.append(f"Key: \"{self.key_takeaway}\"")
         lines.extend(["", f"Source: {self.url}"])
         lines.append("")
-        lines.append("⚠️ AI-generated insight. Verify data before trading.")
+        lines.append(self._disclaimer())
 
         return "\n".join(lines)
 
@@ -265,6 +266,13 @@ class Article(BaseModel):
         Định dạng gửi Telegram với ``parse_mode: HTML``.
         Escape toàn bộ tiêu đề / takeaway / URL để không bị RSS phá markup (Markdown legacy dễ vỡ vì ``_``, ``*``).
         """
+        # DEX price-move alert có layout bảng giá riêng — con số lên đầu,
+        # không mặc đồng phục tin tức. Fallback news-style nếu summary hỏng.
+        if self.narrative_tag == "DEX_MOVE":
+            dex_render = self._format_dex_alert_html()
+            if dex_render:
+                return dex_render
+
         sent_at = sent_at or datetime.now(timezone.utc)
         tz_ict = timezone(timedelta(hours=7))
         pub_ict = self.published_at.astimezone(tz_ict)
@@ -275,11 +283,6 @@ class Article(BaseModel):
         label = html.escape(self.market_impact.value.upper() if self.market_impact else "N/A")
         source_esc = html.escape(self.source.strip())
         title_esc = html.escape(self.title)
-        sentiment_str = (
-            html.escape(f"{self.sentiment:+.2f}")
-            if self.sentiment is not None
-            else "N/A"
-        )
 
         # Urgency prefix cho header
         urgency_prefix = {
@@ -306,7 +309,10 @@ class Article(BaseModel):
                 f"⏱ Source time (ICT): {pub_ict.strftime('%H:%M - %d/%m/%Y')} | "
                 f"Sent: {sent_ict.strftime('%H:%M')} | Lag: {lag_minutes}m"
             )
-        lines.extend(["", f"Sentiment: {sentiment_str}"])
+        lines.append("")
+        # DEX alert là số liệu trực tiếp — không có sentiment để hiển thị.
+        if self.sentiment is not None:
+            lines.append(f"Sentiment: {html.escape(f'{self.sentiment:+.2f}')}")
         if self.low_confidence:
             lines.append("Confidence: [?] low")
 
@@ -316,7 +322,84 @@ class Article(BaseModel):
 
         href = html.escape(str(self.url))
         lines.extend(["", f'<a href="{href}">Source link</a>', ""])
-        lines.append("⚠️ AI-generated insight. Verify data before trading.")
+        lines.append(self._disclaimer())
+        return "\n".join(lines)
+
+    def _disclaimer(self) -> str:
+        """DEX alert là dữ liệu thị trường trực tiếp, không phải insight do AI viết."""
+        if self.narrative_tag == "DEX_MOVE":
+            return "⚠️ Direct market data from DEXScreener. Verify before trading."
+        return "⚠️ AI-generated insight. Verify data before trading."
+
+    _DEX_HORIZON_LABEL = {"m5": "5m", "h1": "1h", "h6": "6h", "h24": "24h"}
+
+    @staticmethod
+    def _fmt_usd_compact(value: float) -> str:
+        if value >= 1_000_000:
+            return f"${value / 1_000_000:.1f}M"
+        if value >= 1_000:
+            return f"${value / 1_000:.1f}K"
+        return f"${value:.2f}"
+
+    @staticmethod
+    def _fmt_price(value: float) -> str:
+        if value >= 1:
+            return f"${value:,.2f}"
+        if value >= 0.01:
+            return f"${value:.4f}"
+        return f"${value:.8f}"
+
+    def _format_dex_alert_html(self) -> Optional[str]:
+        """
+        Layout bảng giá kiểu DEXScreener — hook nằm ở ký tự đầu tiên:
+
+            🚀 WIF/SOL +12.4% · 1h
+            💵 $2.345 | Raydium · Solana
+            📊 Vol $850.0K · 💧 Liq $2.4M
+            🟢 221 buys · 🔴 109 sells
+
+            📈 Chart — DEXScreener
+            ⏱ 23:04 ICT
+
+        Số liệu parse lại từ summary máy-ghi của scrapers/dexscreener.py
+        (dispatch queue dựng Article từ DB nên chỉ có các cột sẵn có).
+        Trả None nếu summary không parse được → caller fallback news-style.
+        """
+        summary = self.summary or ""
+        head = re.search(r"pair move on ([^/\s]+)/([^:\s]+):", summary)
+        horizon_match = re.search(r"priceChange\.(m5|h1|h6|h24)=", summary)
+        if not (head and horizon_match):
+            return None
+        fields = dict(re.findall(r"([\w.]+)=([-+0-9.eE]+)", summary))
+        horizon = horizon_match.group(1)
+        try:
+            change = float(fields[f"priceChange.{horizon}"])
+            price = float(fields["priceUsd"])
+            volume = float(fields[f"volume.{horizon}"])
+            liquidity = float(fields["liquidity.usd"])
+            buys = int(float(fields["buys"]))
+            sells = int(float(fields["sells"]))
+        except (KeyError, ValueError):
+            return None
+
+        pair_label = html.escape(self.title.split(" ")[0])
+        chain = html.escape(head.group(1).capitalize())
+        dex = html.escape(head.group(2).capitalize())
+        arrow = "🚀" if change > 0 else "🩸"
+        sign = "+" if change > 0 else ""
+        h_label = self._DEX_HORIZON_LABEL[horizon]
+        obs_ict = self.published_at.astimezone(timezone(timedelta(hours=7))).strftime("%H:%M")
+        href = html.escape(str(self.url))
+
+        lines = [
+            f"{arrow} <b>{pair_label} {sign}{change:.1f}%</b> · {h_label}",
+            f"💵 {self._fmt_price(price)} | {dex} · {chain}",
+            f"📊 Vol {self._fmt_usd_compact(volume)} · 💧 Liq {self._fmt_usd_compact(liquidity)}",
+            f"🟢 {buys} buys · 🔴 {sells} sells",
+        ]
+        if self.low_confidence:
+            lines.append("⚠️ Low liquidity — DYOR")
+        lines.extend(["", f'<a href="{href}">📈 Chart — DEXScreener</a>', f"⏱ {obs_ict} ICT"])
         return "\n".join(lines)
 
 

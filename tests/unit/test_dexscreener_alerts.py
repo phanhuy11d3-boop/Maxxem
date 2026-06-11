@@ -45,6 +45,67 @@ def test_dexscreener_alert_is_actionable_price_move():
     assert article.dedup_key == "dex:solana:examplepair:h1:UP:202606111000"
 
 
+def test_dexscreener_alert_has_no_sentiment_and_no_ai_disclaimer():
+    article = build_alert_article(_pair(12.4), "h1", 12.4, {"cooldown_minutes": 15})
+
+    # Giá trực tiếp từ API — không có gì để "đoán", không gắn sentiment.
+    assert article.sentiment is None
+
+    rendered = article.format_telegram_html()
+    assert "Sentiment:" not in rendered
+    assert "AI-generated" not in rendered
+
+
+def test_dex_alert_renders_price_board_not_news_uniform():
+    article = build_alert_article(_pair(12.4), "h1", 12.4, {"cooldown_minutes": 15})
+    rendered = article.format_telegram_html()
+
+    # Hook ở ký tự đầu tiên: emoji hướng + pair + % in đậm.
+    assert rendered.startswith("🚀 <b>WIF/SOL +12.4%</b> · 1h")
+    assert "📊 Vol $850.0K" in rendered
+    assert "💧 Liq $2.4M" in rendered
+    assert "🟢 221 buys · 🔴 109 sells" in rendered
+    assert "Chart — DEXScreener" in rendered
+    # Không mặc đồng phục tin tức.
+    assert "IMPORTANT" not in rendered
+    assert "BULLISH" not in rendered
+    assert "Key:" not in rendered
+
+
+def test_dex_alert_dump_uses_blood_emoji_and_low_liq_warning():
+    pair = _pair(-9.3)
+    pair["liquidity"] = {"usd": 80000}
+    article = build_alert_article(pair, "h1", -9.3, {"cooldown_minutes": 15})
+    rendered = article.format_telegram_html()
+
+    assert rendered.startswith("🩸 <b>WIF/SOL -9.3%</b> · 1h")
+    assert "⚠️ Low liquidity — DYOR" in rendered
+
+
+def test_dex_alert_falls_back_to_news_style_when_summary_unparseable():
+    article = build_alert_article(_pair(12.4), "h1", 12.4, {"cooldown_minutes": 15})
+    broken = article.model_copy(update={"summary": "corrupted"})
+    rendered = broken.format_telegram_html()
+
+    # Vẫn gửi được, không crash — quay về template news với footer DEX.
+    assert "Direct market data from DEXScreener" in rendered
+
+
+def test_news_article_still_renders_sentiment():
+    article = Article(
+        url="https://example.com/news/1",
+        title="Example news headline for rendering",
+        source="U.Today",
+        published_at=datetime.now(timezone.utc),
+        sentiment=0.5,
+        market_impact=MarketImpact.BULLISH,
+        processed=True,
+    )
+    rendered = article.format_telegram_html()
+    assert "Sentiment: +0.50" in rendered
+    assert "AI-generated insight" in rendered
+
+
 def test_dedup_key_allows_repeated_events_on_same_url():
     base = Article(
         url="https://dexscreener.com/solana/examplepair",
