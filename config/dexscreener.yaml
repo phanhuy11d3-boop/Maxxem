@@ -1,0 +1,63 @@
+enabled: true
+cooldown_minutes: 15
+min_liquidity_usd: 50000
+min_volume_usd:
+  m5: 5000
+  h1: 10000
+  h6: 50000
+  h24: 100000
+thresholds_pct:
+  m5: 2.0
+  h1: 4.0
+  h6: 8.0
+  h24: 12.0
+watchlist:
+  # query is resolved through DEXScreener search; highest-liquidity matching pair wins.
+  - name: "SOL/USDC"
+    query: "SOL/USDC"
+    chainId: "solana"
+    pairAddress: "GhhUiNcoFKEtZ9RTGd1DgHHouDAJrW9DDADmX13jdGEY"
+    baseSymbol: "SOL"
+    quoteSymbol: "USDC"
+  - name: "JUP/SOL"
+    query: "JUP/SOL"
+    chainId: "solana"
+    pairAddress: "C1MgLojNLWBKADvu9BHdtgzz1oZX4dZ5zGdGcgvvW8Wz"
+    baseSymbol: "JUP"
+    quoteSymbol: "SOL"
+  - name: "WIF/SOL"
+    query: "dogwifhat"
+    chainId: "solana"
+    pairAddress: "EP2ib6dYdEeqD8MfE2ezHCxX3kP3K2eLKkirfPm5eyMx"
+    baseSymbol: "$WIF"
+    quoteSymbol: "SOL"
+  - name: "BONK/SOL"
+    query: "BONK/SOL"
+    chainId: "solana"
+    pairAddress: "6oFWm7KPLfxnwMb3z5xwBoXNSPP3JJyirAPqPSiVcnsp"
+    baseSymbol: "Bonk"
+    quoteSymbol: "SOL"
+  - name: "RAY/SOL"
+    query: "RAY/SOL"
+    chainId: "solana"
+    pairAddress: "2AXXcN6oN9bBT5owwmTH53C7QHUXvhLeu718Kqt8rvY2"
+    baseSymbol: "RAY"
+    quoteSymbol: "SOL"
+  - name: "WETH/USDT"
+    query: "WETH/USDT"
+    chainId: "ethereum"
+    pairAddress: "0x4e68Ccd3E89f51C3074ca5072bbAC773960dFa36"
+    baseSymbol: "WETH"
+    quoteSymbol: "USDT"
+  - name: "WBTC/USDT"
+    query: "WBTC/USDT"
+    chainId: "ethereum"
+    pairAddress: "0x56534741CD8B152df6d48AdF7ac51f75169A83b2"
+    baseSymbol: "WBTC"
+    quoteSymbol: "USDT"
+  - name: "PEPE/WETH"
+    query: "PEPE/WETH"
+    chainId: "ethereum"
+    pairAddress: "0xA43fe16908251ee70EF74718545e4FE6C5cCEc9f"
+    baseSymbol: "PEPE"
+    quoteSymbol: "WETH"

@@ -100,6 +100,7 @@ def init_db():
                     id TEXT PRIMARY KEY,
                     title TEXT NOT NULL,
                     url TEXT NOT NULL,
+                    dedup_key TEXT,
                     source TEXT NOT NULL,
                     published_at TIMESTAMPTZ NOT NULL,
                     published_from_source BOOLEAN DEFAULT TRUE,
@@ -126,6 +127,7 @@ def init_db():
             for col_sql in [
                 "ALTER TABLE articles ADD COLUMN IF NOT EXISTS narrative_tag TEXT",
                 "ALTER TABLE articles ADD COLUMN IF NOT EXISTS affected_tokens TEXT[]",
+                "ALTER TABLE articles ADD COLUMN IF NOT EXISTS dedup_key TEXT",
                 "ALTER TABLE articles ADD COLUMN IF NOT EXISTS urgency TEXT",
                 "ALTER TABLE articles ADD COLUMN IF NOT EXISTS low_confidence BOOLEAN DEFAULT FALSE",
                 "ALTER TABLE articles ADD COLUMN IF NOT EXISTS published_from_source BOOLEAN DEFAULT TRUE",
@@ -152,6 +154,37 @@ def init_db():
         _get_pool().putconn(conn)
 
 
+def _insert_row_for_article(article: Article) -> tuple:
+    impact = article.market_impact.value if article.market_impact else None
+    is_actionable = article.processed and article.market_impact in (
+        MarketImpact.BULLISH,
+        MarketImpact.BEARISH,
+    )
+    return (
+        article.id,
+        article.title,
+        str(article.url),
+        article.dedup_key,
+        article.source,
+        article.published_at,
+        article.published_from_source,
+        article.summary,
+        article.sentiment,
+        impact,
+        article.key_takeaway,
+        article.narrative_tag,
+        article.affected_tokens,
+        article.urgency,
+        article.low_confidence,
+        None,
+        "pending" if is_actionable else None,
+        0,
+        article.scraped_at,
+        article.processed,
+        0,
+    )
+
+
 def upsert_article(article: Article) -> Optional[bool]:
     """
     Deduplication Gateway:
@@ -163,19 +196,13 @@ def upsert_article(article: Article) -> Optional[bool]:
         with conn.cursor() as cursor:
             cursor.execute('''
                 INSERT INTO articles (
-                    id, title, url, source, published_at, published_from_source, summary, scraped_at, processed, retry_count
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, FALSE, 0)
+                    id, title, url, dedup_key, source, published_at, published_from_source,
+                    summary, sentiment, market_impact, key_takeaway, narrative_tag,
+                    affected_tokens, urgency, low_confidence, tg_sent, tg_status,
+                    tg_attempts, scraped_at, processed, retry_count
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (id) DO NOTHING
-            ''', (
-                article.id,
-                article.title,
-                str(article.url),
-                article.source,
-                article.published_at,
-                article.published_from_source,
-                article.summary,
-                article.scraped_at
-            ))
+            ''', _insert_row_for_article(article))
             is_new = cursor.rowcount > 0
         conn.commit()
         return is_new
@@ -207,11 +234,7 @@ def upsert_articles_batch(articles: List[Article]) -> Tuple[int, int]:
             seen[a.id] = a
     unique = list(seen.values())
 
-    rows = [
-        (a.id, a.title, str(a.url), a.source, a.published_at,
-         a.published_from_source, a.summary, a.scraped_at)
-        for a in unique
-    ]
+    rows = [_insert_row_for_article(a) for a in unique]
 
     conn = _get_pool().getconn()
     try:
@@ -220,13 +243,16 @@ def upsert_articles_batch(articles: List[Article]) -> Tuple[int, int]:
                 cursor,
                 '''
                 INSERT INTO articles (
-                    id, title, url, source, published_at, published_from_source, summary, scraped_at, processed, retry_count
+                    id, title, url, dedup_key, source, published_at, published_from_source,
+                    summary, sentiment, market_impact, key_takeaway, narrative_tag,
+                    affected_tokens, urgency, low_confidence, tg_sent, tg_status,
+                    tg_attempts, scraped_at, processed, retry_count
                 ) VALUES %s
                 ON CONFLICT (id) DO NOTHING
                 RETURNING id
                 ''',
                 rows,
-                template="(%s, %s, %s, %s, %s, %s, %s, %s, FALSE, 0)",
+                template="(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 page_size=200,
                 fetch=True,
             )
@@ -279,6 +305,7 @@ def get_unprocessed() -> List[Article]:
         try:
             art = Article(
                 url=row['url'],
+                dedup_key=row.get('dedup_key'),
                 title=row['title'],
                 source=row['source'],
                 published_at=row['published_at'],
@@ -546,6 +573,7 @@ def get_tg_dispatch_queue(max_age_minutes: int = 30, max_attempts: int = 3) -> L
         try:
             art = Article(
                 url=row['url'],
+                dedup_key=row.get('dedup_key'),
                 title=row['title'],
                 source=row['source'],
                 published_at=row['published_at'],

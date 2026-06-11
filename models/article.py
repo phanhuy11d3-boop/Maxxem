@@ -104,6 +104,10 @@ class Article(BaseModel):
     url: HttpUrl = Field(
         description="URL gốc. Dùng để compute ID hash."
     )
+    dedup_key: Optional[str] = Field(
+        default=None,
+        description="Khóa dedup tùy chọn cho event lặp trên cùng URL, ví dụ DEX pair theo time bucket.",
+    )
     title: str = Field(
         min_length=5,
         max_length=500,
@@ -190,10 +194,12 @@ class Article(BaseModel):
     @property
     def id(self) -> str:
         """
-        ID duy nhất = SHA-256(sanitized_url).
-        URL được sanitize trước khi hash: chặt query params + trailing slash.
+        ID duy nhất = SHA-256(sanitized_url hoặc dedup_key).
+        RSS/news dùng sanitized URL. Event lặp trên cùng URL (DEX pair alert)
+        dùng dedup_key để không bị chặn vĩnh viễn sau lần alert đầu tiên.
         """
-        return hashlib.sha256(self._sanitize_url(str(self.url)).encode()).hexdigest()
+        key = self.dedup_key or self._sanitize_url(str(self.url))
+        return hashlib.sha256(key.encode()).hexdigest()
 
     # ===========================================================================
     # Validators
@@ -321,6 +327,10 @@ class Article(BaseModel):
 if __name__ == "__main__":
     from datetime import timedelta
     from pydantic import ValidationError
+    import sys
+
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
     print("=" * 60)
     print("TEST 1: Bài hợp lệ + normalize market_impact")

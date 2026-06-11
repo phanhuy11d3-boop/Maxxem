@@ -29,6 +29,8 @@ GitHub Actions (mỗi 1 phút)
         │     → send_telegram + mark_tg_attempt      (drain backlog trước)
         │
         ├─► scrape_all_feeds()
+        │     ├─ scrapers/dexscreener.py + config/dexscreener.yaml
+        │     │    → deterministic DEX pair moves, processed/actionable sẵn
         │     ├─ config/sources.yaml  (RSS, tier trong comment / thứ tự scrape)
         │     └─ scrapers/fast_signals.py  (optional API: Lookonchain, UW, Arkham — cần key)
         │
@@ -161,10 +163,12 @@ File: `.github/workflows/scraper.yml`
 | `models/article.py` | Contract + format Telegram HTML |
 | `storage/postgres.py` | Pool, schema, dedup, outbox |
 | `scrapers/generic_rss.py` | RSS + gọi `fetch_fast_signals()` |
+| `scrapers/dexscreener.py` | DEXScreener pair price-move scanner; tạo alert đã actionable, không qua LLM |
 | `scrapers/fast_signals.py` | Fast API sources (optional keys) |
 | `processors/insight_extractor.py` | LLM triage + batch + error class |
 | `utils/notifier.py` | Telegram, SLA check, telemetry guards |
 | `config/sources.yaml` | Danh sách RSS (tier bằng section comment) |
+| `config/dexscreener.yaml` | Watchlist/ngưỡng DEX pair movement |
 | `.github/workflows/scraper.yml` | Scheduler |
 
 ---

@@ -17,6 +17,7 @@ from pydantic import ValidationError
 import socket
 
 from models.article import Article
+from scrapers.dexscreener import fetch_dexscreener_alerts
 from scrapers.fast_signals import fetch_fast_signals
 
 logger = logging.getLogger(__name__)
@@ -115,6 +116,14 @@ def scrape_all_feeds(config_path: str = "config/sources.yaml") -> List[Article]:
     """Cào tất cả các feeds được định nghĩa trong file cấu hình."""
     sources = load_sources(config_path)
     all_articles = []
+
+    # DEXScreener price-move alerts are deterministic, already-actionable
+    # Article objects. They run before RSS because the product focus is direct
+    # coin/pair movement, not generic news volume.
+    try:
+        all_articles.extend(fetch_dexscreener_alerts())
+    except Exception as e:
+        logger.warning(f"DEXScreener ingestion skipped due to error: {e}")
     
     for source in sources:
         articles = scrape_feed(source)

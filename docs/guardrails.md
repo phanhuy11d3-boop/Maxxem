@@ -8,6 +8,7 @@
 
 - LLM chỉ phân tích từ `title` và `summary` đã ingest.
 - Thiếu dữ liệu → **`market_impact: neutral`**, không bịa mới.
+- Alert DEXScreener không dùng LLM để bịa diễn giải: số liệu phải đến trực tiếp từ API pair (`priceChange`, `volume`, `liquidity`, `txns`).
 
 ---
 
@@ -39,6 +40,8 @@ Meta thời gian:
 ## 5. Dedup
 
 [`storage/postgres.py`](../storage/postgres.py): `id = SHA-256(URL đã sanitize)`; `ON CONFLICT DO NOTHING`. Story-level dedup (trùng nội dung khác URL) không có trong lõi hiện tại.
+
+DEX pair alerts dùng `Article.dedup_key` theo `{chain}:{pair}:{horizon}:{direction}:{time_bucket}` để cùng một DEXScreener URL có thể alert lại sau cooldown mà không spam từng phút.
 
 ---
 

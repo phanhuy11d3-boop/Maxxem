@@ -34,9 +34,11 @@ Triết lý: **deterministic**, ưu tiên recall (miss tin là lỗi nghiêm tr�
 ## 3. 🟢 Smoke test — go-live
 
 - [ ] `init_db()` / migration chạy trên Postgres đích (`ALTER` IF NOT EXISTS xong).
+- [ ] `py -3 scripts/diagnose_dexscreener.py` → watchlist đọc được, pair sai symbol hiện `MISS`, không âm thầm map nhầm coin.
 - [ ] **`py -3 main.py`** (Windows) hoặc **`python main.py`** (CI) → không crash full pipeline.
 - [ ] Scraped → `SELECT` có row mới, dedup không nhân đôi cùng `id`.
 - [ ] Tin **bullish/bearish**: xuất hiện trên Telegram với **`Source time (ICT) | Sent | Lag`** khi `published_from_source`; dòng **`Confidence: [?] low`** khi `low_confidence`.
+- [ ] DEXScreener alert: title/key phải có pair, horizon, `%` biến động, volume, liquidity, buys/sells và link DEXScreener.
 - [ ] Neutral: **không** vào queue gửi; `tg_status` không kẹt `pending`.
 - [ ] Actionable backlog: **`_dispatch_tg_queue`** gọi **đầu** và **cuối** run — tin mới không nằm kẹt nếu run trước crash giữa LLM và send.
 - [ ] Sau **30 phút**, actionable chưa gửi → `tg_status='expired'`, không retry vô hạn.
