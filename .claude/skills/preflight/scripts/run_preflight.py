@@ -1,21 +1,36 @@
 # -*- coding: utf-8 -*-
 """Preflight smoke-test for orchestrator changes.
 
-Runs, in order: unit tests -> legacy pipeline -> agentic pipeline,
-prints one summary line per stage and exits non-zero on first failure
-of a REQUIRED stage.
+Dry by default: unit tests -> compile core modules -> DEX diagnosis.
+Use --live to append legacy pipeline -> agentic pipeline.
 
-WARNING: stages 2 and 3 execute the REAL pipeline against the production
-DB (and Telegram outbox, subject to the 30-minute stale window). That is
-the documented ops-manager smoke procedure, but it is not a dry run.
+WARNING: --live executes the REAL pipeline against the production DB
+and Telegram outbox, subject to the 30-minute stale window.
 """
+import argparse
 import os
 import subprocess
 import sys
 import time
 
-STAGES = [
+CORE_COMPILE_FILES = [
+    "main.py",
+    "agentic_runtime.py",
+    "models/article.py",
+    "storage/postgres.py",
+    "scrapers/dexscreener.py",
+    "scrapers/generic_rss.py",
+    "processors/insight_extractor.py",
+    "utils/notifier.py",
+]
+
+DRY_STAGES = [
     ("unit-tests", ["py", "-3", "-m", "pytest", "tests/unit", "-q"], True),
+    ("compile-core", ["py", "-3", "-m", "py_compile", *CORE_COMPILE_FILES], True),
+    ("diagnose-dexscreener", ["py", "-3", "scripts/diagnose_dexscreener.py"], True),
+]
+
+LIVE_STAGES = [
     ("legacy-pipeline", ["py", "-3", "main.py", "--legacy"], True),
     # agentic is opt-in and must fall back to legacy on failure; its own
     # crash is still a finding, so we run it but report rather than infer.
@@ -24,9 +39,24 @@ STAGES = [
 
 
 def main():
+    parser = argparse.ArgumentParser(description="CryptoSentinel preflight")
+    parser.add_argument(
+        "--live",
+        action="store_true",
+        help="Append production DB/Telegram pipeline stages.",
+    )
+    args = parser.parse_args()
+
+    stages = list(DRY_STAGES)
+    if args.live:
+        print("preflight: LIVE mode enabled - production DB/Telegram may be touched")
+        stages.extend(LIVE_STAGES)
+    else:
+        print("preflight: dry mode - no intentional Telegram sends or DB writes")
+
     env = dict(os.environ, PYTHONIOENCODING="utf-8")
     results = []
-    for name, cmd, required in STAGES:
+    for name, cmd, required in stages:
         t0 = time.monotonic()
         proc = subprocess.run(cmd, env=env, capture_output=True, text=True,
                               timeout=900)

@@ -80,6 +80,7 @@ Diagnose DEX price-move scanner: `py -3 scripts/diagnose_dexscreener.py`.
 
 ## Tài liệu
 
+- [`docs/refactor-master-plan.md`](docs/refactor-master-plan.md) — kế hoạch cải tổ DEX-first, repo structure mới, phase migration, rủi ro.
 - [`docs/architecture.md`](docs/architecture.md) — pipeline, DB, LLM, tiers, file map.
 - [`docs/guardrails.md`](docs/guardrails.md) — guardrails nội dung & sản phẩm.
 - [`docs/operations.md`](docs/operations.md) — checklist vận hành & smoke test.

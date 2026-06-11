@@ -1,12 +1,14 @@
 ---
 name: add-source
-description: Add a new RSS/news source to CryptoSentinel following the full validation procedure (validate feed, edit sources.yaml, wire tier membership in BOTH main.py and agentic_runtime.py, test parse, run unit tests). Use when adding, replacing, or evaluating a news feed.
+description: Add a secondary legacy RSS/news source to CryptoSentinel following the full validation procedure. Use only for RSS/news context, not for primary DEX price-move alerts.
 argument-hint: "[feed-url] [tier 0|1|2]"
 ---
 
-# Add Source — full procedure
+# Add Source - legacy RSS/news procedure
 
-Adding a source is NOT just editing `config/sources.yaml`. Follow every step; the tier gotcha in step 3 has bitten before.
+Adding a source is NOT just editing `config/sources.yaml`. This skill is for
+secondary RSS/news context only. The primary product is DEX price-move alerts;
+use `dexscreener-watchlist` for watched coin/pair movements.
 
 ## 1. Validate the feed first
 

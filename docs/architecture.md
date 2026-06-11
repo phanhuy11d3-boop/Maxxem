@@ -1,8 +1,8 @@
-# Architecture — CryptoSentinel (trading-grade pipeline)
+# Architecture — CryptoSentinel (current runtime)
 
 > Pipeline mặc định: **legacy linear** trong `main.py`. Chế độ `python main.py --agentic` dùng `agentic_runtime.py` (cùng storage + LLM), có fallback về legacy nếu lỗi nặng.
 
-Tài liệu này thay cho `implementation_plan.md` (đã gỡ): mô tả **trạng thái hiện tại** của code và DB.
+Tài liệu này mô tả **trạng thái hiện tại** của code và DB. Target refactor DEX-first nằm ở [`docs/refactor-master-plan.md`](refactor-master-plan.md); nếu có mâu thuẫn về hướng đi tương lai, plan refactor và `CLAUDE.md` thắng.
 
 ---
 

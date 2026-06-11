@@ -1,32 +1,43 @@
 ---
 name: preflight
-description: Smoke-test the orchestrator before committing changes that touch main.py, agentic_runtime.py, processors/, scrapers/ or scraper.yml. Runs unit tests, the legacy pipeline, and the agentic pipeline in sequence.
+description: Dry smoke-test the repo before committing changes that touch runtime, scrapers, storage, or workflows. Runs unit tests, compile checks, and DEX diagnosis by default; live production pipeline requires --live.
 disable-model-invocation: true
 allowed-tools: Bash(py -3 .claude/skills/preflight/scripts/*)
 ---
 
-# Preflight — smoke before commit
+# Preflight - smoke before commit
 
-This is the ops-manager smoke procedure as one command. It is manual-only
-(`disable-model-invocation: true`) because stages 2-3 run the REAL pipeline
-against the production DB and Telegram outbox — never let the model trigger
-it as a side effect.
+This is the ops-manager smoke procedure as one command. It is dry by default:
+no Telegram sends and no intentional production DB writes. Live pipeline stages
+exist only behind `--live`.
 
-## Run
+## Dry Run
 
 ```powershell
 py -3 .claude/skills/preflight/scripts/run_preflight.py
 ```
 
-Stages, in order (script aborts on required-stage failure):
+Dry stages, in order:
 
 1. `pytest tests/unit -q` — required
-2. `py -3 main.py --legacy` — required (production-default path)
-3. `py -3 main.py --agentic` — optional (opt-in path; must fall back to legacy on failure, so its crash is a warning, not an abort)
+2. `py -3 -m py_compile ...` — required
+3. `py -3 scripts/diagnose_dexscreener.py` — required, read-only market scanner diagnosis
+
+## Live Run
+
+```powershell
+py -3 .claude/skills/preflight/scripts/run_preflight.py --live
+```
+
+Live stages append:
+
+1. `py -3 main.py --legacy` — required production-default path
+2. `py -3 main.py --agentic` — optional experimental path
 
 ## Interpret
 
-- **ALL PASS** → safe to commit. Also eyeball `storage/state.json` for the error counters of the last run (`db_errors` / `llm_errors` / `tg_errors` should be 0).
+- **ALL PASS** on dry run → safe enough for a normal commit gate. It does not prove live Telegram delivery.
+- **ALL PASS** on live run → pipeline executed without crashing. Also eyeball `storage/state.json` for the error counters of the last run (`db_errors` / `llm_errors` / `tg_errors` should be 0).
 - **PASS WITH WARNINGS** (agentic failed) → committable for legacy-only changes, but report the agentic failure tail and check whether the fallback to legacy actually engaged.
 - **ABORT** → do not commit. The script prints the last 15 lines of the failing stage; diagnose from there. For pipeline-internal failures, delegate to the matching specialist agent (ops-manager for orchestration, signal-analyst for LLM steps, db-auditor for storage).
-- Telegram sends during stage 2/3 are real but bounded by the 30-minute stale window — mention any sends in the report so the operator is not surprised by channel messages.
+- Telegram sends during `--live` are real but bounded by the 30-minute stale window — mention any sends in the report so the operator is not surprised by channel messages.

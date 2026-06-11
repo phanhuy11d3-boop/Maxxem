@@ -1,6 +1,6 @@
 # Guardrails — ràng buộc vận hành & nội dung
 
-Được enforce chính qua các hằng **`TRIAGE_PROMPT`**, **`SYSTEM_PROMPT_BATCH`** trong [`processors/insight_extractor.py`](../processors/insight_extractor.py), logic **`main.py`**, và format [`models/article.py`](../models/article.py). Không dùng ElizaOS trong pipeline Python.
+Được enforce chính qua `CLAUDE.md`, logic DEX trong [`scrapers/dexscreener.py`](../scrapers/dexscreener.py), các hằng **`TRIAGE_PROMPT`**, **`SYSTEM_PROMPT_BATCH`** trong [`processors/insight_extractor.py`](../processors/insight_extractor.py), logic **`main.py`**, và format [`models/article.py`](../models/article.py). Không dùng ElizaOS trong pipeline Python.
 
 ---
 
@@ -67,5 +67,13 @@ DEX pair alerts dùng `Article.dedup_key` theo `{chain}:{pair}:{horizon}:{direct
 Đổi prompt hoặc contract JSON → cập nhật song song:
 
 1. Prompts trong `insight_extractor.py`
-2. [`.claude/skills/insight-extractor/reference.md`](../.claude/skills/insight-extractor/reference.md)
+2. [`.claude/agents/signal-analyst.md`](../.claude/agents/signal-analyst.md)
 3. `Article` fields + Postgres columns nếu thêm cờ mới (`low_confidence` đã có cột DB).
+
+Đổi DEX alert contract → cập nhật song song:
+
+1. [`config/dexscreener.yaml`](../config/dexscreener.yaml)
+2. [`scrapers/dexscreener.py`](../scrapers/dexscreener.py)
+3. [`scripts/diagnose_dexscreener.py`](../scripts/diagnose_dexscreener.py)
+4. [`.claude/skills/dexscreener-watchlist/SKILL.md`](../.claude/skills/dexscreener-watchlist/SKILL.md)
+5. [`tests/unit/test_dexscreener_alerts.py`](../tests/unit/test_dexscreener_alerts.py)
