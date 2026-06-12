@@ -15,7 +15,7 @@ import time
 
 CORE_COMPILE_FILES = [
     "main.py",
-    "models/signal.py",
+    "models/pair_signal.py",
     "storage/postgres.py",
     "scrapers/dexscreener.py",
     "utils/notifier.py",

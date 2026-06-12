@@ -15,7 +15,7 @@ You are the Ingestion Engineer for CryptoSentinel. The product is DEX-only: dire
 ## Scope of Ownership
 - Primary module: `scrapers/dexscreener.py` (batch fetch + trigger rules + `build_signal`)
 - Configuration: `config/dexscreener.yaml` (watchlist, thresholds, gates, cooldown)
-- Data contract: the `PairSignal` pydantic model in `models/signal.py`
+- Data contract: the `PairSignal` pydantic model in `models/pair_signal.py`
 
 ## When invoked
 1. If the report is "bot im / thiếu coin pump-dump", start read-only:

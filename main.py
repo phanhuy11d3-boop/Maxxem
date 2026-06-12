@@ -38,17 +38,16 @@ MAX_TG_ATTEMPTS = 3
 STATE_FILE = Path(__file__).parent / "storage" / "state.json"
 
 
-def _update_state(db_errors: int, tg_errors: int) -> None:
-    """Ghi trạng thái pipeline vào state.json sau mỗi lần chạy."""
+def _update_state(db_errors: int, tg_errors: int, api_errors: int = 0) -> None:
+    """Ghi trạng thái pipeline vào state.json sau mỗi lần chạy (ghi đè sạch — không vác key mồ côi)."""
     try:
-        current = json.loads(STATE_FILE.read_text(encoding="utf-8")) if STATE_FILE.exists() else {}
-        current.update({
+        state = {
             "last_run": datetime.now(timezone.utc).isoformat(),
             "current_phase": "idle",
-            "system_status": "degraded" if (db_errors + tg_errors) > 0 else "healthy",
-            "errors": {"db": db_errors, "telegram": tg_errors},
-        })
-        STATE_FILE.write_text(json.dumps(current, indent=2, ensure_ascii=False), encoding="utf-8")
+            "system_status": "degraded" if (db_errors + tg_errors + api_errors) > 0 else "healthy",
+            "errors": {"db": db_errors, "telegram": tg_errors, "api": api_errors},
+        }
+        STATE_FILE.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
     except Exception as e:
         logger.warning(f"Không thể ghi state.json: {e}")
 
@@ -96,6 +95,7 @@ def run_pipeline() -> None:
 
     db_errors = 0
     tg_errors = 0
+    api_errors = 0
     scanned_count = 0
     triggered_count = 0
     new_count = 0
@@ -123,8 +123,15 @@ def run_pipeline() -> None:
         # Phase 3: Quét DEXScreener watchlist
         scanned_count = len(load_config().get("watchlist") or [])
         logger.info("3. Quét DEXScreener watchlist (%s pair)...", scanned_count)
-        signals = scan_watchlist()
+        signals, api_errors = scan_watchlist()
         triggered_count = len(signals)
+        if api_errors:
+            # No-silent-quiet: API sập phải kêu, không được giả dạng thị trường im
+            logger.error("DEXScreener API degraded: %s fetch fail vòng này.", api_errors)
+            send_admin_alert(
+                f"🛜 <b>DEX_API_DEGRADED</b>\n{api_errors} fetch fail — "
+                f"trạng thái quiet vòng này KHÔNG đáng tin."
+            )
 
         # Phase 4: Insert + dedup (cooldown bucket nằm trong dedup_key)
         if signals:
@@ -150,7 +157,7 @@ def run_pipeline() -> None:
         logger.info(
             f"=== Pipeline Hoàn Tất | "
             f"Scanned: {scanned_count} | Triggered: {triggered_count} | Mới: {new_count} | "
-            f"TG OK: {tg_sent_ok_total} | Lỗi DB/TG: {db_errors}/{tg_errors} | "
+            f"TG OK: {tg_sent_ok_total} | Lỗi DB/TG/API: {db_errors}/{tg_errors}/{api_errors} | "
             f"Thời gian: {duration:.1f}s ==="
         )
         send_heartbeat(
@@ -161,12 +168,13 @@ def run_pipeline() -> None:
             tg_errors=tg_errors,
             duration_s=duration,
             tg_sent_ok=tg_sent_ok_total,
+            api_errors=api_errors,
             pending_count=kpi["pending_count"],
             failed_count=kpi["failed_count"],
             expired_count_60m=kpi["expired_count_60m"],
             oldest_pending_age_min=kpi["oldest_pending_age_min"],
         )
-        _update_state(db_errors=db_errors, tg_errors=tg_errors)
+        _update_state(db_errors=db_errors, tg_errors=tg_errors, api_errors=api_errors)
 
 
 def main() -> None:

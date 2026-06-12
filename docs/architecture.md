@@ -47,7 +47,7 @@ Shift tick (1 phút)
 
 ---
 
-## 3. Data contract — `PairSignal` (`models/signal.py`)
+## 3. Data contract — `PairSignal` (`models/pair_signal.py`)
 
 | Nhóm | Field |
 |---|---|

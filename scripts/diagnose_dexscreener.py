@@ -13,7 +13,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from models.signal import HORIZONS
+from models.pair_signal import HORIZONS
 from scrapers.dexscreener import _entry_cfg, _num, _trigger, fetch_pair, load_config
 
 

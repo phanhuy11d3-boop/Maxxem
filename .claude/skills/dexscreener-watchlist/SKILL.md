@@ -14,7 +14,7 @@ touches anything in this path.
 
 - Watchlist and thresholds: `config/dexscreener.yaml`
 - Scanner: `scrapers/dexscreener.py`
-- Data contract + Telegram render: `models/signal.py`
+- Data contract + Telegram render: `models/pair_signal.py`
 - Read-only diagnosis: `scripts/diagnose_dexscreener.py`
 - Tests: `tests/unit/test_dexscreener_scanner.py`, `tests/unit/test_signal_format.py`
 

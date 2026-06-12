@@ -18,7 +18,7 @@ old `articles` table remains in the DB as frozen history only.
 ## Non-Negotiables
 
 1. **DEX-only**: `config/dexscreener.yaml`, `scrapers/dexscreener.py`,
-   `models/signal.py`, `storage/postgres.py`, `utils/notifier.py`, `main.py`
+   `models/pair_signal.py`, `storage/postgres.py`, `utils/notifier.py`, `main.py`
    are the whole product. Do not reintroduce news/LLM paths.
 2. **Pinned pairs only in production**: every production watchlist entry must
    include `chainId`, `pairAddress`, `baseSymbol`, and `quoteSymbol`. Search
@@ -64,7 +64,7 @@ out the mismatch. Do not silently follow the older layer.
 | Area | File |
 |---|---|
 | Orchestrator (1 vòng pipeline) | `main.py` |
-| Data contract + Telegram render | `models/signal.py` (`PairSignal`) |
+| Data contract + Telegram render | `models/pair_signal.py` (`PairSignal`) |
 | DEX scanner (batch fetch + rules) | `scrapers/dexscreener.py` |
 | Watchlist/thresholds | `config/dexscreener.yaml` |
 | Storage + outbox | `storage/postgres.py` (bảng `signals`) |
@@ -79,7 +79,7 @@ out the mismatch. Do not silently follow the older layer.
 | Purpose | Command |
 |---|---|
 | Unit tests | `py -3 -m pytest tests/unit -q` |
-| Compile core files | `py -3 -m py_compile main.py models/signal.py storage/postgres.py scrapers/dexscreener.py utils/notifier.py` |
+| Compile core files | `py -3 -m py_compile main.py models/pair_signal.py storage/postgres.py scrapers/dexscreener.py utils/notifier.py` |
 | Diagnose DEX scanner | `py -3 scripts/diagnose_dexscreener.py` |
 | Diagnose outbox | `py -3 scripts/diagnose_outbox.py` |
 | Dry preflight | `py -3 .claude/skills/preflight/scripts/run_preflight.py` |
@@ -87,14 +87,18 @@ out the mismatch. Do not silently follow the older layer.
 
 ## Telegram Format Contract
 
-Every alert renders from `PairSignal.format_telegram_html()`:
+Every alert renders from `PairSignal.format_telegram_html()` — layout copied
+from the market's most engaging price-alert channels (Whale Alert magnitude
+emojis, buy-bot pressure bars, cashtags, action links, hashtags):
 
-- line 1 hook: 🚀/🩸 + pair + % + horizon;
-- price + DEX · chain;
+- line 1 hook: 🚀/🩸 lặp 1-5 lần theo |%| + `$CASHTAG` + % + horizon + ⚡ khi hot;
+- buy-pressure bar 🟢🔴 (8 ô, kèm % và buys/sells thô; ẩn khi < 10 txns);
+- price — pair · DEX · chain;
 - multi-horizon row (5m/1h/6h/24h);
-- volume + liquidity; buys/sells; market cap khi có;
+- volume · liquidity · market cap;
 - `⚠️ Low liquidity — DYOR` khi liquidity < $100k;
-- chart link + giờ ICT.
+- action row: 📈 Chart | 🔁 Swap (jup.ag cho Solana, Uniswap cho Ethereum);
+- hashtags `#TOKEN #Chain` + giờ ICT.
 
 No sentiment line, no urgency labels, no AI disclaimer, no news layout. Tests
 in `tests/unit/test_signal_format.py` enforce zero banned words.

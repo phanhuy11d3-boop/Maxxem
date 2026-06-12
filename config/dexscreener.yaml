@@ -12,13 +12,16 @@ thresholds_pct:
   h6: 8.0
   h24: 12.0
 watchlist:
-  # query is resolved through DEXScreener search; highest-liquidity matching pair wins.
+  # query chỉ dùng cho diagnose/khám phá; production luôn fetch theo pairAddress.
+  # Majors (SOL/WETH/WBTC) có per-pair thresholds_pct thấp hơn global:
+  # với BTC, +2% trong 1h đã là sự kiện — threshold meme-coin làm majors câm vĩnh viễn.
   - name: "SOL/USDC"
     query: "SOL/USDC"
     chainId: "solana"
     pairAddress: "GhhUiNcoFKEtZ9RTGd1DgHHouDAJrW9DDADmX13jdGEY"
     baseSymbol: "SOL"
     quoteSymbol: "USDC"
+    thresholds_pct: { m5: 1.0, h1: 2.0, h6: 3.5, h24: 5.0 }
   - name: "JUP/SOL"
     query: "JUP/SOL"
     chainId: "solana"
@@ -49,12 +52,14 @@ watchlist:
     pairAddress: "0x4e68Ccd3E89f51C3074ca5072bbAC773960dFa36"
     baseSymbol: "WETH"
     quoteSymbol: "USDT"
+    thresholds_pct: { m5: 1.0, h1: 2.0, h6: 3.5, h24: 5.0 }
   - name: "WBTC/USDT"
     query: "WBTC/USDT"
     chainId: "ethereum"
     pairAddress: "0x56534741CD8B152df6d48AdF7ac51f75169A83b2"
     baseSymbol: "WBTC"
     quoteSymbol: "USDT"
+    thresholds_pct: { m5: 0.8, h1: 1.5, h6: 3.0, h24: 4.0 }
   - name: "PEPE/WETH"
     query: "PEPE/WETH"
     chainId: "ethereum"

@@ -15,7 +15,7 @@ import requests
 from datetime import datetime, timezone
 from typing import Optional
 
-from models.signal import PairSignal
+from models.pair_signal import PairSignal
 
 logger = logging.getLogger(__name__)
 SLA_SECONDS = 120     # quan sát -> gửi quá 2 phút là vi phạm SLA tốc độ
@@ -147,6 +147,7 @@ def send_heartbeat(scanned: int, triggered: int, new: int,
                    db_errors: int, tg_errors: int,
                    duration_s: float,
                    tg_sent_ok: int = 0,
+                   api_errors: int = 0,
                    pending_count: int = 0, failed_count: int = 0,
                    expired_count_60m: int = 0, oldest_pending_age_min: float = 0.0) -> bool:
     """
@@ -155,6 +156,7 @@ def send_heartbeat(scanned: int, triggered: int, new: int,
     Status:
       ✅ OK             — không lỗi
       ⚠️ N errors       — có lỗi nhưng pipeline không sập
+      🛜 API degraded   — fetch DEXScreener fail: "quiet" lúc này KHÔNG đáng tin
       😴 quiet          — quét OK, không pair nào vượt ngưỡng (trạng thái lành mạnh)
     """
     if not _ops_telemetry_enabled():
@@ -178,6 +180,9 @@ def send_heartbeat(scanned: int, triggered: int, new: int,
     total_errors = db_errors + tg_errors
     if total_errors > 0:
         status = f"⚠️ {total_errors} errors"
+    elif api_errors > 0:
+        # API fail mà vẫn 0 trigger thì KHÔNG được báo "quiet" — đó là mù, không phải im
+        status = f"🛜 API degraded ({api_errors} fetch fail)"
     elif triggered == 0:
         status = "😴 quiet (no pair crossed thresholds)"
     else:
@@ -190,7 +195,7 @@ def send_heartbeat(scanned: int, triggered: int, new: int,
         f"├ Outbox: pending={pending_count} | failed={failed_count} | "
         f"expired(60m)={expired_count_60m}\n"
         f"├ oldest_pending_age: {oldest_pending_age_min:.1f}m (cutoff 30m)\n"
-        f"├ Errors — DB: {db_errors} | TG: {tg_errors}\n"
+        f"├ Errors — DB: {db_errors} | TG: {tg_errors} | API: {api_errors}\n"
         f"└ Duration: {duration_s:.1f}s"
     )
 

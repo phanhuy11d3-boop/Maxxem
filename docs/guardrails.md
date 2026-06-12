@@ -2,7 +2,7 @@
 
 Enforce qua `CLAUDE.md`, logic scanner trong
 [`scrapers/dexscreener.py`](../scrapers/dexscreener.py), format trong
-[`models/signal.py`](../models/signal.py), và tests
+[`models/pair_signal.py`](../models/pair_signal.py), và tests
 `tests/unit/test_signal_format.py`.
 
 ---

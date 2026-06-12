@@ -24,7 +24,7 @@ import psycopg2
 from psycopg2 import pool
 from psycopg2.extras import RealDictCursor, execute_values
 
-from models.signal import HORIZONS, PairSignal
+from models.pair_signal import HORIZONS, PairSignal
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +85,7 @@ def init_db():
                     pair_address TEXT NOT NULL,
                     base_symbol TEXT NOT NULL,
                     quote_symbol TEXT NOT NULL,
+                    base_address TEXT,
                     url TEXT NOT NULL,
                     horizon TEXT NOT NULL,
                     change_pct DOUBLE PRECISION NOT NULL,
@@ -109,6 +110,10 @@ def init_db():
                     tg_sent_at TIMESTAMPTZ
                 )
             ''')
+            # Migrate additive cho bảng đã tồn tại trước khi có cột này
+            cursor.execute(
+                "ALTER TABLE signals ADD COLUMN IF NOT EXISTS base_address TEXT"
+            )
             cursor.execute(
                 "CREATE INDEX IF NOT EXISTS idx_signals_outbox ON signals(tg_status, observed_at)"
             )
@@ -128,16 +133,17 @@ def init_db():
 
 _INSERT_COLS = (
     "id, dedup_key, chain_id, dex_id, pair_address, base_symbol, quote_symbol, "
-    "url, horizon, change_pct, price_usd, volume_usd, liquidity_usd, buys, sells, "
-    "change_m5, change_h1, change_h6, change_h24, fdv, market_cap, low_liquidity, "
-    "observed_at, tg_status, tg_attempts"
+    "base_address, url, horizon, change_pct, price_usd, volume_usd, liquidity_usd, "
+    "buys, sells, change_m5, change_h1, change_h6, change_h24, fdv, market_cap, "
+    "low_liquidity, observed_at, tg_status, tg_attempts"
 )
 
 
 def _insert_row(sig: PairSignal) -> tuple:
     return (
         sig.id, sig.dedup_key, sig.chain_id, sig.dex_id, sig.pair_address,
-        sig.base_symbol, sig.quote_symbol, sig.url, sig.horizon, sig.change_pct,
+        sig.base_symbol, sig.quote_symbol, sig.base_address, sig.url,
+        sig.horizon, sig.change_pct,
         sig.price_usd, sig.volume_usd, sig.liquidity_usd, sig.buys, sig.sells,
         sig.changes.get("m5"), sig.changes.get("h1"),
         sig.changes.get("h6"), sig.changes.get("h24"),
@@ -202,6 +208,7 @@ def _row_to_signal(row: dict) -> PairSignal:
         pair_address=row["pair_address"],
         base_symbol=row["base_symbol"],
         quote_symbol=row["quote_symbol"],
+        base_address=row.get("base_address"),
         url=row["url"],
         horizon=row["horizon"],
         change_pct=float(row["change_pct"]),

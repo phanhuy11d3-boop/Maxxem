@@ -69,6 +69,22 @@ def test_bucket_stable_within_cooldown_window():
     assert a != c
 
 
+def test_h24_cooldown_floor_prevents_all_day_respam():
+    # Move h24 kéo dài: 10:07 và 18:00 cùng ngày phải CÙNG bucket (1 alert/ngày),
+    # sang ngày mới thì bucket mới.
+    morning = build_signal(_pair(), "h24", 15.3, CFG, now=datetime(2026, 6, 12, 10, 7, tzinfo=timezone.utc))
+    evening = build_signal(_pair(), "h24", 15.3, CFG, now=datetime(2026, 6, 12, 18, 0, tzinfo=timezone.utc))
+    next_day = build_signal(_pair(), "h24", 15.3, CFG, now=datetime(2026, 6, 13, 1, 0, tzinfo=timezone.utc))
+    assert morning.id == evening.id
+    assert morning.id != next_day.id
+    # h1 nhắc lại theo giờ, không theo 15 phút
+    h1_a = build_signal(_pair(), "h1", 12.4, CFG, now=datetime(2026, 6, 12, 10, 7, tzinfo=timezone.utc))
+    h1_b = build_signal(_pair(), "h1", 12.4, CFG, now=datetime(2026, 6, 12, 10, 59, tzinfo=timezone.utc))
+    h1_c = build_signal(_pair(), "h1", 12.4, CFG, now=datetime(2026, 6, 12, 11, 1, tzinfo=timezone.utc))
+    assert h1_a.id == h1_b.id
+    assert h1_a.id != h1_c.id
+
+
 def test_build_signal_structured_fields_and_dedup():
     now = datetime(2026, 6, 12, 10, 7, tzinfo=timezone.utc)
     sig = build_signal(_pair(), "h1", 12.4, CFG, now=now)

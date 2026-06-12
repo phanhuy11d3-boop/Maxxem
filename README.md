@@ -7,16 +7,20 @@ liquidity, buys/sells, link chart. **Không news. Không LLM. Không nhãn
 bullish/bearish** — hướng đi của giá là con số, trader tự đọc trong 2 giây.
 
 ```text
-🚀 WIF/SOL +12.4% · 1h
-💰 $2.345 · Raydium · Solana
-⏳ 5m +1.1% | 1h +12.4% | 6h +8.0% | 24h +15.3%
-📊 Vol 1h $850.0K · 💧 Liq $2.4M
-🟢 221 buys · 🔴 109 sells
-🧢 MC $2.2B
+🚀🚀🚀 $WIF +12.4% · 1h
+🟢🟢🟢🟢🟢🔴🔴🔴 67% buys (221/109)
 
-📈 Chart — DEXScreener
-⏱ 23:04 ICT
+💰 $2.35 — WIF/SOL · Raydium · Solana
+⏳ 5m +1.1% | 1h +12.4% | 6h +8.0% | 24h +15.3%
+📊 Vol $850.0K · 💧 Liq $2.4M · 🧢 MC $2.2B
+
+📈 Chart | 🔁 Swap
+#WIF #Solana ⏱ 23:04 ICT
 ```
+
+Format copy 5 pattern của các kênh price-alert hút user nhất: emoji lặp theo
+độ lớn (kiểu Whale Alert), cashtag `$WIF` tap được, thanh áp lực mua 🟢🔴,
+hàng hành động Chart | Swap (jup.ag / Uniswap), hashtag lọc coin trong kênh.
 
 Trading-grade: cadence 1 phút, alert quá 30 phút tự expire (không bao giờ gửi
 giá nguội), outbox chống gửi trùng giữa 2 ca production.
@@ -47,7 +51,7 @@ Shift (local 1m / GH loop) → main.py
 ```text
 crypto-sentinel/
 ├── main.py                     # orchestrator DEX-only
-├── models/signal.py            # PairSignal — data contract + Telegram render
+├── models/pair_signal.py            # PairSignal — data contract + Telegram render
 ├── scrapers/dexscreener.py     # scanner: batch fetch + trigger rules
 ├── storage/postgres.py         # bảng signals + outbox state machine
 ├── utils/notifier.py           # Telegram delivery + heartbeat

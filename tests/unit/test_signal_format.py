@@ -1,11 +1,14 @@
-"""Tests cho PairSignal: format Telegram bảng giá, không tàn dư news/sentiment."""
+"""Tests cho PairSignal: format theo pattern kênh price-alert thị trường,
+không tàn dư news/sentiment."""
 
 from datetime import datetime, timezone
 
 import pytest
 from pydantic import ValidationError
 
-from models.signal import PairSignal, fmt_price, fmt_usd_compact
+from models.pair_signal import (
+    PairSignal, fmt_price, fmt_usd_compact, magnitude_emojis, pressure_bar,
+)
 
 
 def _signal(**overrides) -> PairSignal:
@@ -15,6 +18,7 @@ def _signal(**overrides) -> PairSignal:
         pair_address="ExamplePair",
         base_symbol="WIF",
         quote_symbol="SOL",
+        base_address="EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm",
         url="https://dexscreener.com/solana/examplepair",
         horizon="h1",
         change_pct=12.4,
@@ -32,18 +36,23 @@ def _signal(**overrides) -> PairSignal:
     return PairSignal(**base)
 
 
-def test_format_is_price_board_with_full_evidence():
+def test_format_market_style_full_evidence():
     text = _signal().format_telegram_html()
-    assert text.startswith("🚀 <b>WIF/SOL +12.4%</b> · 1h")
-    assert "$2.35" in text                      # giá (làm tròn 2 thập phân)
-    assert "Raydium · Solana" in text           # venue
-    assert "5m +1.1% | 1h +12.4% | 6h +8.0% | 24h +15.3%" in text  # đa khung
-    assert "Vol 1h $850.0K" in text
-    assert "Liq $2.4M" in text
-    assert "221 buys" in text and "109 sells" in text
-    assert "MC $2.2B" in text
+    # Hook: emoji theo độ lớn + cashtag (12.4% -> 3 rocket, chưa hot -> không ⚡)
+    assert text.startswith("🚀🚀🚀 <b>$WIF +12.4%</b> · 1h")
+    assert "⚡" not in text
+    # Thanh áp lực mua: 221/330 = 67% -> 5 xanh 3 đỏ
+    assert "🟢🟢🟢🟢🟢🔴🔴🔴 67% buys (221/109)" in text
+    assert "$2.35" in text and "WIF/SOL" in text
+    assert "Raydium · Solana" in text
+    assert "5m +1.1% | 1h +12.4% | 6h +8.0% | 24h +15.3%" in text
+    assert "Vol $850.0K" in text and "Liq $2.4M" in text and "MC $2.2B" in text
+    # Hàng hành động: Chart + Swap (solana -> jup.ag với mint thật)
     assert "dexscreener.com" in text
-    assert "23:04 ICT" in text                  # 16:04 UTC -> ICT (+7)
+    assert "jup.ag/swap/SOL-EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm" in text
+    # Hashtag lọc coin + giờ ICT (16:04 UTC -> 23:04 ICT)
+    assert "#WIF #Solana" in text
+    assert "23:04 ICT" in text
 
 
 def test_format_has_zero_news_or_ai_remnants():
@@ -52,9 +61,11 @@ def test_format_has_zero_news_or_ai_remnants():
         assert banned not in text
 
 
-def test_format_dump_uses_blood_arrow():
+def test_format_dump_uses_blood_and_hot_flag():
     text = _signal(change_pct=-9.3, dedup_key="dex:x:y:h1:DOWN:1").format_telegram_html()
-    assert text.startswith("🩸 <b>WIF/SOL -9.3%</b> · 1h")
+    assert text.startswith("🩸🩸 <b>$WIF -9.3%</b> · 1h")
+    hot = _signal(horizon="m5", change_pct=9.0).format_telegram_html()
+    assert hot.startswith("🚀🚀 <b>$WIF +9.0%</b> · 5m ⚡")
 
 
 def test_format_low_liquidity_warns_dyor():
@@ -63,9 +74,36 @@ def test_format_low_liquidity_warns_dyor():
 
 
 def test_format_minimal_data_still_renders():
-    text = _signal(changes={}, market_cap=None, fdv=None).format_telegram_html()
-    assert "WIF/SOL +12.4%" in text
+    text = _signal(
+        changes={}, market_cap=None, fdv=None, base_address=None, buys=2, sells=1
+    ).format_telegram_html()
+    assert "$WIF +12.4%" in text
     assert "⏳" not in text and "MC" not in text
+    assert "Swap" not in text          # không base_address -> không link Swap
+    assert "🟢 2 buys · 🔴 1 sells" in text  # ít txn -> không bar, rơi về số thô
+
+
+def test_swap_url_only_for_mapped_chains():
+    assert "jup.ag" in _signal().swap_url
+    eth = _signal(chain_id="ethereum", base_address="0xabc")
+    assert "app.uniswap.org" in eth.swap_url and "0xabc" in eth.swap_url
+    assert _signal(chain_id="base").swap_url is None
+    assert _signal(base_address=None).swap_url is None
+
+
+def test_magnitude_emojis_tiers():
+    assert magnitude_emojis(1.0) == "🚀"
+    assert magnitude_emojis(5.0) == "🚀🚀"
+    assert magnitude_emojis(12.4) == "🚀🚀🚀"
+    assert magnitude_emojis(-25.0) == "🩸🩸🩸🩸"
+    assert magnitude_emojis(60.0) == "🚀🚀🚀🚀🚀"
+
+
+def test_pressure_bar_rules():
+    assert pressure_bar(2, 1) is None                      # thiếu mẫu
+    assert pressure_bar(10, 0) == "🟢🟢🟢🟢🟢🟢🟢🟢 100% buys (10/0)"
+    mixed = pressure_bar(1, 99)
+    assert mixed.startswith("🟢") and "🔴" in mixed        # có mua thì bar không tuyệt đối đỏ
 
 
 def test_direction_and_hot():

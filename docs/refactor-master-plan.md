@@ -38,7 +38,7 @@ ngày khi thị trường đi ngang là hành vi ĐÚNG.
 | `scrapers/fast_signals.py` (UW/Arkham/news APIs) | XÓA |
 | `processors/insight_extractor.py` (LLM triage + analysis) | XÓA |
 | `agentic_runtime.py`, cờ `--legacy/--agentic` | XÓA |
-| `models/article.py` (Article + MarketImpact + sentiment) | XÓA — thay bằng `models/signal.py` |
+| `models/article.py` (Article + MarketImpact + sentiment) | XÓA — thay bằng `models/pair_signal.py` |
 | 9 diagnose scripts thời news/LLM + `start_9router.vbs` | XÓA — thay bằng 2 script read-only |
 | 4 test files thời news + golden dataset | XÓA — thay bằng 2 test files mới (20 tests) |
 | Biến env LLM_*, UW/ARKHAM trong .env + workflow | XÓA |
@@ -48,7 +48,7 @@ ngày khi thị trường đi ngang là hành vi ĐÚNG.
 
 ### Đã xây mới
 
-- **`models/signal.py`** — `PairSignal`: data contract thuần số liệu,
+- **`models/pair_signal.py`** — `PairSignal`: data contract thuần số liệu,
   `id = sha256(dedup_key)`, render Telegram từ field cấu trúc.
 - **`scrapers/dexscreener.py`** — batch fetch theo chain (≤30 pair/request,
   8 pair = 2 HTTP call thay vì 8), symbol-mismatch guard, per-pair override

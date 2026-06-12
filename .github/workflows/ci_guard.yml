@@ -51,10 +51,10 @@ jobs:
 
       # ── Chất lượng code: validate model không bị vỡ ──────────────────────
       - name: "[Test] Validate PairSignal model (Smoke Test)"
-        run: python models/signal.py
+        run: python models/pair_signal.py
 
       - name: "[Test] Compile core"
-        run: python -m py_compile main.py models/signal.py storage/postgres.py scrapers/dexscreener.py utils/notifier.py
+        run: python -m py_compile main.py models/pair_signal.py storage/postgres.py scrapers/dexscreener.py utils/notifier.py
 
       - name: "[Test] Run Unit Tests"
         run: python -m pytest tests/unit -q
