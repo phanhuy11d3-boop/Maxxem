@@ -1,7 +1,7 @@
 ---
 name: health-sweep
-description: Run a full parallel health sweep of the CryptoSentinel pipeline — ingestion, LLM signal quality, database/outbox state, and Telegram delivery — by fanning out the four specialist subagents concurrently. Use when the pipeline looks degraded, the bot is silent, signals look wrong, or before/after a deploy.
-argument-hint: "[optional focus area, e.g. \"telegram\" or \"last 36h\"]"
+description: Run a full parallel health sweep of the CryptoSentinel pipeline — DEX scanner ingestion, signal-rule quality, database/outbox state, and Telegram delivery — by fanning out the four specialist subagents concurrently. Use when the pipeline looks degraded, the bot is silent, alerts look wrong, or before/after a deploy.
+argument-hint: "[optional focus area, e.g. \"telegram\" or \"last 24h\"]"
 ---
 
 # Parallel Health Sweep
@@ -12,10 +12,10 @@ You are the orchestrator. Fan the work out to the four specialist subagents and 
 
 Spawn each with `run_in_background: true`. Every task prompt MUST state: "READ-ONLY sweep: do not edit files, do not write to the DB, do not send Telegram messages. Return a structured report."
 
-1. **ingestion-scout** — "Audit ingestion health: run `py -3 scripts/diagnose_dexscreener.py`, read `config/dexscreener.yaml` and `config/sources.yaml`, spot-check 2-3 feeds with WebFetch for availability and parse-ability, check scrapers for recent breakage signals. Report DEX trigger/no-trigger status plus per-source RSS status."
-2. **signal-analyst** — "Audit signal quality: run `py -3 scripts/diagnose_recent.py` and `py -3 scripts/diagnose_pipeline.py` (both read-only). Look for neutral-drift, triage misclassification, stuck retries. Do NOT run unstick_retry.py."
-3. **db-auditor** — "Audit DB and outbox state machine: run `py -3 scripts/diagnose_telegram.py`, `py -3 scripts/audit_agent.py`, `py -3 scripts/query_recent_non_neutral.py --limit 10 --max-age-minutes 30`. Report counts of pending/sent/failed/expired, the delivery-latency percentiles from section 7 (any sent row > 30 min or `expired` > 0 = delivery violation, report as BROKEN), and any anomaly."
-4. **notifier-broadcaster** — "Audit delivery path read-only: run `py -3 scripts/diagnose_telegram2.py`, check that actionable rows are reaching `tg_sent`. Do NOT run diagnose_marktg.py (it live-fires)."
+1. **ingestion-scout** — "Audit scanner health: run `py -3 scripts/diagnose_dexscreener.py`, read `config/dexscreener.yaml`, spot-check 1-2 pairs against the raw API with WebFetch (`https://api.dexscreener.com/latest/dex/pairs/<chain>/<addr>`). Report per-pair trigger/no-trigger, any [MISS]/[ERROR]/symbol-mismatch lines, and API availability."
+2. **signal-analyst** — "Audit signal-rule quality: run `py -3 scripts/diagnose_dexscreener.py` and `py -3 scripts/diagnose_outbox.py` (both read-only). Compare alert volume in the signals table vs thresholds — too noisy (same pair firing every bucket) or suspiciously quiet (thresholds unreachable)? Report per-pair/horizon distribution and tuning suspicion."
+3. **db-auditor** — "Audit DB and outbox state machine: run `py -3 scripts/diagnose_outbox.py`. Report tg_status distribution, 24h sent/expired counts, send-lag percentiles (any sent lag > 30 min or expired > 0 = delivery violation, report as BROKEN), queue depth, and any anomaly."
+4. **notifier-broadcaster** — "Audit delivery path read-only: run `py -3 scripts/diagnose_outbox.py`, check signals are reaching tg_status='sent' within SLA (120s), render a dry preview via `py -3 utils/notifier.py` (NO --live). Report formatting health and delivery latency."
 
 If `$ARGUMENTS` names a focus area, still dispatch all four but tell the matching agent to go deeper on it.
 
@@ -28,4 +28,4 @@ If `$ARGUMENTS` names a focus area, still dispatch all four but tell the matchin
 
 ## Consolidate
 
-When all four return, produce ONE report ordered by pipeline flow: ingestion → analysis → storage → delivery. Cross-correlate stages (e.g. "DB shows 40 pending + broadcaster shows 0 sent in 2h → delivery is the bottleneck, not analysis"). End with a prioritized fix list. Apply no fix without being asked.
+When all four return, produce ONE report ordered by pipeline flow: scanner → rules → storage → delivery. Cross-correlate stages (e.g. "scanner triggered 6 signals + outbox shows 0 sent in 2h → delivery is the bottleneck, not the scanner"). Remember quiet can be healthy: "no pair crossed thresholds" with a healthy scanner is OK, not BROKEN. End with a prioritized fix list. Apply no fix without being asked.

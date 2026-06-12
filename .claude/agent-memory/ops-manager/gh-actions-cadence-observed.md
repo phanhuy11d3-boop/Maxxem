@@ -11,7 +11,7 @@ GitHub Actions does NOT honor the 1-minute cron for repo phanhuy11d3-boop/Maxxem
 
 - **Day shift**: Windows Task Scheduler (`CryptoSentinel-Pipeline`) on operator PC, 1-min cadence, logs to `storage/local_cron.log` (timestamps machine-local, ICT = UTC+7).
 - **Night shift**: GH Actions `scraper.yml` — one run is a ~5h30 shift looping the pipeline internally every minute (`timeout-minutes: 350`, concurrency group queues next shift). A run staying `in_progress` for hours is HEALTHY; a scheduled run completing in 2-3 min means the shift loop died early.
-- Commit `695bd1c`: 70B free tier hits daily token cap mid-night-shift; 8B failover added.
+- (Lịch sử: commit `695bd1c` từng thêm LLM failover cho ca đêm — toàn bộ LLM đã xóa trong pivot DEX-only 2026-06-12; ca đêm giờ chỉ cần DATABASE_URL + BOT_TOKEN + CHAT_ID.)
 
 **Handover gap fix (commit `0fa17da`, 2026-06-11):** final step of each GH shift self-dispatches the next shift via `workflow_dispatch` API. Repo secret `WORKFLOW_PAT` (fine-grained PAT, Actions: read+write on Maxxem) added and verified 2026-06-11 ~08:35 UTC — manual dispatch with it returned 204, run 27334466511 queued behind the live shift; the chain is active. If shifts stop self-chaining in the future, check PAT expiration first (403 with `x-accepted-github-permissions: actions=write` = missing/insufficient PAT). Loop step has its own `timeout-minutes: 340` so the dispatch step still runs if the loop hangs.
 

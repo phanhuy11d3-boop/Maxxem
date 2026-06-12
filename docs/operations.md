@@ -1,76 +1,84 @@
-# Operations — QA, Smoke Test & Outbox
+# Operations — QA, Smoke Test & Outbox (v3 DEX-only)
 
-> Checklist giám sát pipeline **trading-grade** (cron 1 phút, stale 30 phút, Telegram outbox, telemetry tách kênh).
+> Checklist vận hành pipeline alert giá **trading-grade**: cadence 1 phút,
+> stale 30 phút, outbox chống trùng, telemetry tách kênh.
 
-Triết lý: **deterministic**, ưu tiên recall (miss tin là lỗi nghiêm trọng). Chi tiết kiến trúc → [`docs/architecture.md`](architecture.md).
+Triết lý: **deterministic**. Một alert sai (nhầm pair, giá nguội, số bịa) phá
+niềm tin nhanh hơn mười alert đúng xây được.
 
 ---
 
-## 1. Biến môi trường bắt buộc & tùy chọn
+## 1. Biến môi trường
 
-**Bắt buộc:** `DATABASE_URL`, `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL`, `BOT_TOKEN`, `CHAT_ID`. (Trên Actions, `LLM_BASE_URL` phải là URL public — localhost không reach được từ runner.)
+**Bắt buộc:** `DATABASE_URL`, `BOT_TOKEN`, `CHAT_ID`.
 
 **Khuyến nghị vận hành:**
 
-- `ENABLE_OPS_TELEMETRY` — `1`/`true`/`on` để nhận **heartbeat** và **admin alert**; **`0`/không set** để tắt hoàn toàn (mặc định trong workflow hiện tại có thể là tắt).
-- `ADMIN_CHAT_ID`, `HEARTBEAT_CHAT_ID` — chỉ được dùng khi telemetry bật; **never** được trùng `CHAT_ID` (guard trong code).
-
-**Premium / APIs:**
-
-- `PREMIUM_CHAT_ID` — optional; tin `breaking|important` gửi thêm bản mở rộng.
-- `UW_API_KEY`, `ARKHAM_API_KEY` — optional; không có → `fast_signals` bỏ qua nguồn tương ứng, pipeline vẫn chạy.
+- `ENABLE_OPS_TELEMETRY` — `1`/`true`/`on` để nhận heartbeat + admin alert;
+  `0`/không set = tắt hoàn toàn.
+- `ADMIN_CHAT_ID`, `HEARTBEAT_CHAT_ID` — chỉ dùng khi telemetry bật; **không
+  bao giờ** trùng `CHAT_ID` (guard trong code).
+- `PREMIUM_CHAT_ID` — optional; chỉ nhận move nóng (`is_hot`: m5 ≥8% hoặc bất
+  kỳ khung ≥15%).
 
 ---
 
 ## 2. 🔴 Rules bắt buộc (code review)
 
-- `market_impact` trong runtime Python luôn qua **`MarketImpact`** + `normalize_market_impact()` khi đọc từ LLM/DB string.
-- `DATABASE_URL`: không hardcode; binding queries (`%s`) cho mọi SQL user-controlled.
-- **CI Guard / secret patterns:** không để trong comment/docstring **Python** các chuỗi nhạy cảm (`postgresql://`, `gsk_`, …); dùng placeholder kiểu `<db-url>` (xem MEMORY & repo CI).
-- **`low_confidence`:** phải được **persist DB** và đọc lại khi `get_tg_dispatch_queue` để nhãn `[?]` không bị mất giữa enqueue và dispatch.
+- `DATABASE_URL` không hardcode; mọi SQL bind tham số (`%s`).
+- **CI Guard / secret patterns:** không để chuỗi nhạy cảm (`postgresql://`,
+  token pattern) trong comment/docstring Python; dùng placeholder `<db-url>`.
+- `low_liquidity` phải persist DB và đọc lại lúc dispatch — nhãn DYOR không
+  được mất giữa enqueue và send.
+- Không thêm trường opinion (sentiment, bullish/bearish, urgency chữ) vào
+  `PairSignal` hay format — test `test_signal_format.py` có banned-words check.
+- Schema change: chỉ additive (`CREATE/ALTER ... IF NOT EXISTS`), idempotent.
 
 ---
 
-## 3. 🟢 Smoke test — go-live
+## 3. Smoke test trước commit
 
-- [ ] `init_db()` / migration chạy trên Postgres đích (`ALTER` IF NOT EXISTS xong).
-- [ ] `py -3 scripts/diagnose_dexscreener.py` → watchlist đọc được, pair sai symbol hiện `MISS`, không âm thầm map nhầm coin.
-- [ ] **`py -3 main.py`** (Windows) hoặc **`python main.py`** (CI) → không crash full pipeline.
-- [ ] Scraped → `SELECT` có row mới, dedup không nhân đôi cùng `id`.
-- [ ] Tin **bullish/bearish**: xuất hiện trên Telegram với **`Source time (ICT) | Sent | Lag`** khi `published_from_source`; dòng **`Confidence: [?] low`** khi `low_confidence`.
-- [ ] DEXScreener alert: title/key phải có pair, horizon, `%` biến động, volume, liquidity, buys/sells và link DEXScreener.
-- [ ] Neutral: **không** vào queue gửi; `tg_status` không kẹt `pending`.
-- [ ] Actionable backlog: **`_dispatch_tg_queue`** gọi **đầu** và **cuối** run — tin mới không nằm kẹt nếu run trước crash giữa LLM và send.
-- [ ] Sau **30 phút**, actionable chưa gửi → `tg_status='expired'`, không retry vô hạn.
-- [ ] **Telemetry:** với flag tắt, không có heartbeat trên Telegram; khi bật, không spam `CHAT_ID`.
+```powershell
+py -3 .claude/skills/preflight/scripts/run_preflight.py        # dry
+py -3 .claude/skills/preflight/scripts/run_preflight.py --live # LIVE-FIRE, cần ý định rõ
+```
+
+Dry = pytest + py_compile + diagnose scanner (read-only).
+Live = chạy thật `py -3 main.py`: ghi bảng `signals`, có thể gửi Telegram.
 
 ---
 
-## 4. Outbox / SLA quan sát
+## 4. Bot "im" — cây chẩn đoán
 
-- Heartbeat (khi bật) in: **`pending_count`**, `failed_count`, `expired_count_60m`, **`oldest_pending_age_min`**.
-- Code gửi **admin alert** khi **`oldest_pending_age_min >= 24`** (risk trước deadline stale).
-- `send_telegram` báo SLA khi **`SLA_SECONDS` (120s)** breached (telemetry phải bật và `ADMIN_CHAT_ID` hợp lệ).
+1. `py -3 scripts/diagnose_dexscreener.py`
+   - các pair đều `no trigger` với số liệu thật → **quiet lành mạnh**, dừng ở đây.
+   - `[MISS]`/`[ERROR]`/symbol mismatch → scanner/config hỏng → ingestion-scout.
+2. `py -3 scripts/diagnose_outbox.py`
+   - signal có nhưng `pending`/`failed` dồn → delivery hỏng → notifier-broadcaster.
+   - `expired` > 0 trong 24h → cadence gap hoặc send fail kéo dài → cadence-check.
+3. Skill `cadence-check` — coverage 2 ca so với cửa sổ 30 phút.
+4. Skill `health-sweep` — fan-out 4 agent khi chưa khoanh được vùng.
 
----
-
-## 5. DB layer checklist
-
-- `storage/postgres.py` chỉ Postgres + pool; không engine file DB song song trong pipeline chính.
-- Types native: **`TIMESTAMPTZ`**, **`BOOLEAN`**.
-- Pool: `SimpleConnectionPool`; không mở kết nối mới từng lệnh trong hot path production.
-- Mọi hành động DB: `OperationalError` → log + rollback + `putconn`, không được crash `main` vì một lần retry DB.
+Console Windows: prefix `PYTHONIOENCODING=utf-8` nếu script crash vì unicode.
 
 ---
 
-## 6. LLM troubleshooting
+## 5. KPI vận hành
 
-- Lỗi hàng loạt HTTP **400** từ LLM gateway → kiểm tra **model ID**/`response_format`/prompt contract trước khi kết luận sai key.
-- `LLM_MISSING_RESULTS` alert: batch 70B thiếu object theo id — không bump `retry`; bài gắn `low_confidence`.
+| KPI | Nguồn | Ngưỡng |
+|---|---|---|
+| Send lag p95 | `diagnose_outbox.py` | ≤ 120s (SLA) |
+| `expired` 24h | `diagnose_outbox.py` | = 0 |
+| Coverage 24h | `cadence-check` | ≥ 95%, dead-air gap < 30 phút |
+| Alert/ngày/pair | bảng `signals` | đủ thưa để mỗi alert đáng đọc — tune bằng signal-analyst |
 
 ---
 
-## 7. Telegram & rate-limit (sản phẩm)
+## 6. Sự cố thường gặp
 
-- **Không** throttle cố định giữa từng tin signal chỉ để “giữ yên” kênh; khi burst, ưu tiên **delivery** (TG API có thể vẫn trả 429 — xử lý qua retry outbox/`mark_tg_attempt`).
-- Cron 1 phút + concurrency `cancel-in-progress: false` → tránh overlap run dài có thể tạo hàng chờ song song — theo dõi duration trong heartbeat.
+| Triệu chứng | Nguyên nhân khả dĩ | Xử lý |
+|---|---|---|
+| 2 tin trùng nhau trên kênh | claim lease bị bỏ qua / code mới phá claim | kiểm tra `claim_tg_send_slot` còn được gọi trước MỌI send |
+| Alert giá lệch xa chart | pair address sai hoặc pool đã cạn | re-validate bằng `validate_pair.py`, pin lại address |
+| Spam cùng pair liên tục | cooldown quá ngắn / threshold quá thấp | signal-analyst tune per-pair override |
+| GH Actions không chạy đêm | hết ca mà không tự dispatch (thiếu `WORKFLOW_PAT`) | dispatch tay 1 run, kiểm tra secret |

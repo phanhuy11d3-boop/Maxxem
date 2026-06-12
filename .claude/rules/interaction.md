@@ -5,26 +5,29 @@ nếu file này mâu thuẫn với hiến pháp hiện tại.
 
 ## 1. Product Flow
 
-- DEX-first path: Ingestion Scout -> Signal Engineer/Analyst -> DB Auditor ->
-  Notifier Broadcaster -> Ops Manager.
-- RSS/LLM news path là legacy/secondary. Không dùng nó để quyết định số liệu
-  trong DEX price-move alert.
+- Sản phẩm là DEX-only: Ingestion Scout (scanner/watchlist) -> Signal Analyst
+  (ngưỡng/rule) -> DB Auditor (signals + outbox) -> Notifier Broadcaster
+  (format + delivery) -> Ops Manager (cadence/CI).
+- KHÔNG có đường RSS/news/LLM nào trong sản phẩm. Mọi số liệu trong alert đến
+  từ DEXScreener API; hướng đi của giá là dấu của change_pct, không phải nhãn.
 - Không tạo file state trung gian mới nếu runtime chưa thật sự đọc/ghi file đó.
 
 ## 2. Challenge Protocol
 
-- Khi Auditor reject một alert hoặc migration, agent sở hữu phần đó phải đưa
-  bằng chứng: config, raw API/DB row, dedup key, status, hoặc test.
-- Không giả định có model tie-break không tồn tại trong codebase. Với DEX alert,
-  nguồn quyết định là dữ liệu thị trường + rule engine, không phải LLM.
+- Khi Auditor reject một alert hoặc thay đổi schema, agent sở hữu phần đó phải
+  đưa bằng chứng: config, raw API/DB row, dedup key, tg_status, hoặc test.
+- Nguồn quyết định cho mọi tranh chấp về alert là dữ liệu thị trường + rule
+  engine deterministic. Không có model tie-break nào tồn tại trong codebase.
 
 ## 3. Error Handling
 
 - Nếu bot "im", luôn chạy `py -3 scripts/diagnose_dexscreener.py` trước khi
-  chỉnh threshold hoặc prompt.
-- Nếu pipeline lỗi hệ thống, Ops Manager kiểm tra env, DB, scheduler, source
-  health, rồi mới kết luận lỗi sản phẩm.
-- Live commands có thể gửi Telegram hoặc ghi production DB phải được nêu rõ.
+  chỉnh threshold. "Không pair nào vượt ngưỡng" là trạng thái lành mạnh.
+- Nếu pipeline lỗi hệ thống, Ops Manager kiểm tra env, DB, scheduler/cadence,
+  rồi mới kết luận lỗi sản phẩm. Outbox xem bằng `scripts/diagnose_outbox.py`.
+- Live commands có thể gửi Telegram hoặc ghi production DB (`py -3 main.py`,
+  `py -3 utils/notifier.py --live`, preflight `--live`) phải được nêu rõ trước
+  khi chạy. Subagent read-only bị guard hook chặn các lệnh này.
 
 ## 4. Security
 

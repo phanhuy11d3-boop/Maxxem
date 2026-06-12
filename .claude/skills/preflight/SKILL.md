@@ -31,13 +31,11 @@ py -3 .claude/skills/preflight/scripts/run_preflight.py --live
 
 Live stages append:
 
-1. `py -3 main.py --legacy` — required production-default path
-2. `py -3 main.py --agentic` — optional experimental path
+1. `py -3 main.py` — the real DEX-only pipeline (writes `signals`, may send Telegram)
 
 ## Interpret
 
 - **ALL PASS** on dry run → safe enough for a normal commit gate. It does not prove live Telegram delivery.
-- **ALL PASS** on live run → pipeline executed without crashing. Also eyeball `storage/state.json` for the error counters of the last run (`db_errors` / `llm_errors` / `tg_errors` should be 0).
-- **PASS WITH WARNINGS** (agentic failed) → committable for legacy-only changes, but report the agentic failure tail and check whether the fallback to legacy actually engaged.
-- **ABORT** → do not commit. The script prints the last 15 lines of the failing stage; diagnose from there. For pipeline-internal failures, delegate to the matching specialist agent (ops-manager for orchestration, signal-analyst for LLM steps, db-auditor for storage).
+- **ALL PASS** on live run → pipeline executed without crashing. Also eyeball `storage/state.json` for the error counters of the last run (`db` / `telegram` should be 0).
+- **ABORT** → do not commit. The script prints the last 15 lines of the failing stage; diagnose from there. For pipeline-internal failures, delegate to the matching specialist agent (ops-manager for orchestration, ingestion-scout for scanner, db-auditor for storage, notifier-broadcaster for delivery).
 - Telegram sends during `--live` are real but bounded by the 30-minute stale window — mention any sends in the report so the operator is not surprised by channel messages.

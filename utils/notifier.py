@@ -1,8 +1,10 @@
 """
 utils/notifier.py
 =================
-Mô-đun thông báo của CryptoSentinel.
-Chịu trách nhiệm gửi tín hiệu (Bullish/Bearish) tới Telegram.
+Telegram delivery của CryptoSentinel (v3 — DEX-only).
+
+Gửi PairSignal dạng bảng giá DEXScreener-style. Không nhãn bullish/bearish,
+không lời bình AI — chỉ số liệu thị trường + link chart.
 """
 
 import os
@@ -13,12 +15,12 @@ import requests
 from datetime import datetime, timezone
 from typing import Optional
 
-from models.article import Article
+from models.signal import PairSignal
 
 logger = logging.getLogger(__name__)
-SLA_SECONDS = 120
+SLA_SECONDS = 120     # quan sát -> gửi quá 2 phút là vi phạm SLA tốc độ
 MAX_429_RETRIES = 2   # số lần retry in-process khi Telegram trả 429
-MAX_429_WAIT_S = 10   # trần chờ mỗi lần — giữ pipeline cadence không bị treo
+MAX_429_WAIT_S = 10   # trần chờ mỗi lần — giữ cadence pipeline không bị treo
 
 
 def _is_main_channel(chat_id: str) -> bool:
@@ -27,12 +29,10 @@ def _is_main_channel(chat_id: str) -> bool:
 
 
 def _ops_telemetry_enabled() -> bool:
-    """
-    Cờ bật/tắt telemetry vận hành (admin alert + heartbeat).
-    Mặc định tắt để giữ kênh Telegram sạch khi cần quan sát thuần signal.
-    """
+    """Cờ bật/tắt telemetry vận hành (admin alert + heartbeat). Mặc định tắt."""
     raw = (os.environ.get("ENABLE_OPS_TELEMETRY") or "").strip().lower()
     return raw in {"1", "true", "yes", "on"}
+
 
 def _post_to_telegram(
     token: str,
@@ -41,12 +41,7 @@ def _post_to_telegram(
     *,
     parse_mode: Optional[str] = None,
 ) -> bool:
-    """
-    Helper nội bộ: gửi một message tới Telegram API.
-    ``parse_mode`` dùng chuẩn Bot API (vd. ``HTML``, ``Markdown``). Để trống → văn bản thuần.
-
-    Prefer ``HTML`` + ``html.escape`` cho nội dung có tiêu đề RSS — Markdown legacy dễ vỡ vì ``_*[]()``.
-    """
+    """Gửi một message tới Telegram Bot API, retry in-process khi 429."""
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     payload: dict = {"chat_id": chat_id, "text": text, "disable_web_page_preview": True}
     if parse_mode:
@@ -58,8 +53,7 @@ def _post_to_telegram(
             return True
         except requests.exceptions.HTTPError as e:
             status = e.response.status_code if e.response is not None else None
-            # 429: rate limit tạm thời — retry in-process theo retry_after thay vì
-            # đốt 1 attempt của outbox (3 run dính 429 liên tiếp = bài expired oan)
+            # 429: retry in-process theo retry_after thay vì đốt 1 attempt outbox
             if status == 429 and attempt < MAX_429_RETRIES:
                 retry_after = MAX_429_WAIT_S
                 try:
@@ -84,42 +78,6 @@ def _post_to_telegram(
     return False
 
 
-def _build_premium_message(article: Article) -> str:
-    """
-    Bản tin đầy đủ cho kênh Premium: giữ nguyên format HTML + thêm signal box.
-    Chỉ gọi khi article.is_actionable == True.
-    """
-    base = article.format_telegram_html()
-    extras: list[str] = []
-    if article.urgency in ("breaking", "important"):
-        extras.append(f"⚡ Urgency: <b>{html.escape(article.urgency.upper())}</b>")
-    if article.affected_tokens:
-        tokens_str = " ".join(f"<code>{html.escape(t)}</code>" for t in article.affected_tokens)
-        extras.append(f"🎯 Tokens: {tokens_str}")
-    if article.key_takeaway:
-        kt = html.escape(article.key_takeaway)
-        extras.append(f'💡 Signal: <i>"{kt}"</i>')
-    if extras:
-        signal_block = "\n─── <b>PREMIUM SIGNAL</b> ───\n" + "\n".join(extras)
-        return base + "\n" + signal_block
-    return base
-
-
-def _reference_ts(article: Article) -> datetime:
-    """Ưu tiên published_at; fallback scraped_at nếu dữ liệu published lỗi."""
-    try:
-        if article.published_at and article.published_at.tzinfo is not None:
-            return article.published_at
-    except Exception:
-        pass
-    return article.scraped_at
-
-
-def _lag_seconds(article: Article, sent_at: datetime) -> int:
-    ref = _reference_ts(article)
-    return max(0, int((sent_at - ref).total_seconds()))
-
-
 def send_admin_alert(text: str) -> bool:
     """Gửi alert lỗi/chậm về kênh admin-only (ADMIN_CHAT_ID)."""
     if not _ops_telemetry_enabled():
@@ -129,95 +87,81 @@ def send_admin_alert(text: str) -> bool:
     if not token or not admin_chat_id:
         return False
     if _is_main_channel(admin_chat_id):
-        logger.warning("ADMIN_CHAT_ID trùng CHAT_ID (kênh chính). Bỏ qua admin alert để tránh spam UI.")
+        logger.warning("ADMIN_CHAT_ID trùng CHAT_ID (kênh chính). Bỏ qua admin alert.")
         return False
     return _post_to_telegram(token, admin_chat_id, text, parse_mode="HTML")
 
 
-def send_telegram(article: Article) -> bool:
+def send_signal(signal: PairSignal) -> bool:
     """
-    Gửi tin nhắn Telegram cho một bài báo.
-    - Free channel (CHAT_ID): tất cả actionable articles.
-    - Premium channel (PREMIUM_CHAT_ID, optional): breaking/important articles với full signal.
-    Chỉ trả về False nếu Free channel fail (Premium failure chỉ log cảnh báo).
+    Gửi một PairSignal:
+    - Kênh chính (CHAT_ID): mọi signal vượt ngưỡng.
+    - Kênh premium (PREMIUM_CHAT_ID, optional): chỉ move nóng (signal.is_hot).
+    Trả về False chỉ khi kênh chính fail (premium fail chỉ log cảnh báo).
     """
-    if not article.is_actionable:
-        logger.debug(f"Bỏ qua bài báo trung lập (Neutral): {article.id}")
-        return False
-
     token = os.environ.get("BOT_TOKEN")
     chat_id = os.environ.get("CHAT_ID")
-
     if not token or not chat_id:
-        logger.error("CHƯA CẤU HÌNH BOT_TOKEN HOẶC CHAT_ID. Không thể gửi tin nhắn.")
-        send_admin_alert("🚨 <b>Pipeline alert</b>: thiếu BOT_TOKEN hoặc CHAT_ID, không thể gửi tín hiệu.")
+        logger.error("CHƯA CẤU HÌNH BOT_TOKEN HOẶC CHAT_ID. Không thể gửi alert.")
+        send_admin_alert("🚨 <b>Pipeline alert</b>: thiếu BOT_TOKEN hoặc CHAT_ID.")
         return False
 
     sent_at = datetime.now(timezone.utc)
-    lag_seconds = _lag_seconds(article, sent_at)
+    lag_seconds = max(0, int((sent_at - signal.observed_at).total_seconds()))
 
-    message_text = article.format_telegram_html(sent_at=sent_at)
-
+    message_text = signal.format_telegram_html()
     success = _post_to_telegram(token, chat_id, message_text, parse_mode="HTML")
+
     if success:
-        logger.info(f"✅ Đã gửi Telegram (free): {article.title[:40]}...")
+        logger.info(f"✅ Đã gửi alert: {signal.pair_label} {signal.change_pct:+.1f}% ({signal.horizon})")
         if lag_seconds > SLA_SECONDS:
-            # WARNING log luôn ghi — SLA breach không được tàng hình khi telemetry tắt
+            # WARNING log luôn ghi — SLA breach không tàng hình khi telemetry tắt
             logger.warning(
                 f"⚠️ SLA_BREACH: lag={lag_seconds}s > {SLA_SECONDS}s | "
-                f"{article.source} | {article.title[:60]}"
+                f"{signal.pair_label} {signal.change_pct:+.1f}% {signal.horizon}"
             )
             send_admin_alert(
                 f"⚠️ <b>SLA_BREACH</b>\n"
-                f"{html.escape(article.source)} | {html.escape(article.title[:120])}\n"
-                f"Lag={lag_seconds//60}m{lag_seconds%60:02d}s > SLA=2m"
+                f"{html.escape(signal.pair_label)} {signal.change_pct:+.1f}% {signal.horizon}\n"
+                f"Lag={lag_seconds // 60}m{lag_seconds % 60:02d}s > SLA=2m"
             )
     else:
         send_admin_alert(
             f"🚨 <b>TG_SEND_FAIL</b>\n"
-            f"{html.escape(article.source)} | {html.escape(article.title[:120])}"
+            f"{html.escape(signal.pair_label)} {signal.change_pct:+.1f}% {signal.horizon}"
         )
 
-    # Kênh Premium — tuỳ chọn, không ảnh hưởng kết quả trả về của hàm này
+    # Kênh premium — chỉ move nóng, không ảnh hưởng kết quả trả về
     premium_chat_id = os.environ.get("PREMIUM_CHAT_ID", "").strip()
-    if premium_chat_id and article.urgency in ("breaking", "important"):
-        premium_text = _build_premium_message(article)
-        ok = _post_to_telegram(token, premium_chat_id, premium_text, parse_mode="HTML")
+    if premium_chat_id and signal.is_hot:
+        ok = _post_to_telegram(token, premium_chat_id, message_text, parse_mode="HTML")
         if ok:
-            logger.info(f"✅ Đã gửi Telegram (premium): {article.title[:40]}...")
+            logger.info(f"✅ Đã gửi premium: {signal.pair_label}")
         else:
-            logger.warning(f"⚠️ Premium channel fail cho {article.id[:12]}. Free channel OK.")
+            logger.warning(f"⚠️ Premium channel fail cho {signal.id[:12]}. Kênh chính OK.")
 
     return success
 
 
-def send_heartbeat(scraped: int, new: int, ai_processed: int,
-                   db_errors: int, llm_errors: int, tg_errors: int,
+def send_heartbeat(scanned: int, triggered: int, new: int,
+                   db_errors: int, tg_errors: int,
                    duration_s: float,
-                   actionable: int = 0, tg_sent_ok: int = 0,
+                   tg_sent_ok: int = 0,
                    pending_count: int = 0, failed_count: int = 0,
                    expired_count_60m: int = 0, oldest_pending_age_min: float = 0.0) -> bool:
     """
-    Gửi báo cáo tổng kết pipeline sau mỗi lần chạy.
-    Cho phép USER biết pipeline đang sống hay chết mà không cần vào GitHub Actions.
+    Báo cáo tổng kết mỗi lần chạy về kênh ops (không phải kênh signal).
 
-    Status icon:
-      ✅ = Tất cả OK (không có lỗi nào)
-      ⚠️ = Có lỗi NHƯNG pipeline không sập
-      🔇 = "Silent run" — không lỗi nhưng cũng không gửi tin nào (cần xem prompt/triage)
-
-    Bug đã sửa (2026-05-07): trước đây heartbeat chỉ in ``tg_errors`` (đếm fail).
-    Khi pipeline có 0 fail VÀ 0 attempt thì cũng hiện "TG: 0", che mất việc bot
-    im lặng vì LLM gắn nhãn neutral hết. Thêm ``actionable``/``tg_sent_ok`` để
-    USER nhìn 1 phát ra ngay trạng thái thật.
+    Status:
+      ✅ OK             — không lỗi
+      ⚠️ N errors       — có lỗi nhưng pipeline không sập
+      😴 quiet          — quét OK, không pair nào vượt ngưỡng (trạng thái lành mạnh)
     """
     if not _ops_telemetry_enabled():
         logger.info("Ops telemetry disabled: bỏ qua heartbeat Telegram.")
         return True
 
     token = os.environ.get("BOT_TOKEN")
-    # Không spam kênh cộng đồng. Heartbeat chỉ đi kênh riêng nếu có cấu hình.
-    # Ưu tiên HEARTBEAT_CHAT_ID, fallback ADMIN_CHAT_ID.
     heartbeat_chat_id = os.environ.get("HEARTBEAT_CHAT_ID", "").strip()
     chat_id = heartbeat_chat_id or os.environ.get("ADMIN_CHAT_ID", "").strip()
 
@@ -225,32 +169,28 @@ def send_heartbeat(scraped: int, new: int, ai_processed: int,
         logger.warning("Không có BOT_TOKEN — bỏ qua heartbeat.")
         return False
     if not chat_id:
-        logger.info("Không cấu hình HEARTBEAT_CHAT_ID/ADMIN_CHAT_ID — heartbeat chỉ ghi log nội bộ.")
+        logger.info("Không cấu hình HEARTBEAT_CHAT_ID/ADMIN_CHAT_ID — heartbeat chỉ ghi log.")
         return True
     if _is_main_channel(chat_id):
-        logger.warning(
-            "HEARTBEAT_CHAT_ID/ADMIN_CHAT_ID trùng CHAT_ID (kênh chính). "
-            "Bỏ qua heartbeat để giữ UI sạch."
-        )
+        logger.warning("HEARTBEAT chat trùng CHAT_ID (kênh chính). Bỏ qua để giữ kênh sạch.")
         return True
 
-    total_errors = db_errors + llm_errors + tg_errors
+    total_errors = db_errors + tg_errors
     if total_errors > 0:
         status = f"⚠️ {total_errors} errors"
-    elif ai_processed > 0 and tg_sent_ok == 0 and actionable == 0:
-        status = "🔇 silent (no actionable)"
+    elif triggered == 0:
+        status = "😴 quiet (no pair crossed thresholds)"
     else:
         status = "✅ OK"
-    safe_status = html.escape(status)
 
     text = (
-        f"<b>📊 CryptoSentinel Heartbeat</b> | {safe_status}\n"
-        f"├ Scraped: {scraped} bài | Mới: {new}\n"
-        f"├ AI processed: {ai_processed} | Actionable: {actionable} | TG sent: {tg_sent_ok}\n"
+        f"<b>📊 CryptoSentinel Heartbeat</b> | {html.escape(status)}\n"
+        f"├ Pairs scanned: {scanned} | Triggered: {triggered} | New: {new}\n"
+        f"├ TG sent: {tg_sent_ok}\n"
         f"├ Outbox: pending={pending_count} | failed={failed_count} | "
         f"expired(60m)={expired_count_60m}\n"
         f"├ oldest_pending_age: {oldest_pending_age_min:.1f}m (cutoff 30m)\n"
-        f"├ Errors — DB: {db_errors} | LLM: {llm_errors} | TG: {tg_errors}\n"
+        f"├ Errors — DB: {db_errors} | TG: {tg_errors}\n"
         f"└ Duration: {duration_s:.1f}s"
     )
 
@@ -259,8 +199,7 @@ def send_heartbeat(scraped: int, new: int, ai_processed: int,
         logger.info("✅ Heartbeat gửi thành công.")
     if total_errors > 0:
         send_admin_alert(
-            f"🚨 <b>HEARTBEAT_ERRORS</b>\n"
-            f"DB={db_errors} | LLM={llm_errors} | TG={tg_errors}\n"
+            f"🚨 <b>HEARTBEAT_ERRORS</b>\nDB={db_errors} | TG={tg_errors}\n"
             f"Duration={duration_s:.1f}s"
         )
     if oldest_pending_age_min >= 24:
@@ -271,38 +210,41 @@ def send_heartbeat(scraped: int, new: int, ai_processed: int,
         )
     return success
 
+
 # ===========================================================================
-# Smoke Test — chạy: python utils/notifier.py
+# Smoke Test (LIVE-FIRE: gửi Telegram thật) — chạy: py -3 utils/notifier.py
 # ===========================================================================
 if __name__ == "__main__":
-    from datetime import datetime, timezone
-    from models.article import MarketImpact
     import sys
-    
+
     if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")
-        
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
     print("=" * 60)
-    print("TEST: Chạy Telegram Notifier (Yêu cầu có BOT_TOKEN & CHAT_ID)")
+    print("LIVE TEST: gửi 1 alert giả lập tới CHAT_ID thật (cần BOT_TOKEN & CHAT_ID)")
     print("=" * 60)
-    
-    # Tạo một bài báo giả lập Bullish để test
-    test_article = Article(
-        url="https://theblock.co/test-notifier",
-        title="Institutional Investors Accumulate $5B in Bitcoin",
-        source="The Block",
-        published_at=datetime.now(timezone.utc),
-        summary="Major hedge funds increase their exposure to BTC spot ETFs.",
-        sentiment=0.85,
-        market_impact=MarketImpact.BULLISH,
-        key_takeaway="Institutional demand hits record highs with $5B in net inflows.",
-        processed=True
+
+    test_signal = PairSignal(
+        chain_id="solana",
+        dex_id="raydium",
+        pair_address="EP2ib6dYdEeqD8MfE2ezHCxX3kP3K2eLKkirfPm5eyMx",
+        base_symbol="WIF",
+        quote_symbol="SOL",
+        url="https://dexscreener.com/solana/EP2ib6dYdEeqD8MfE2ezHCxX3kP3K2eLKkirfPm5eyMx",
+        horizon="h1",
+        change_pct=12.4,
+        price_usd=2.345,
+        volume_usd=850_000,
+        liquidity_usd=2_400_000,
+        buys=221,
+        sells=109,
+        changes={"m5": 1.1, "h1": 12.4, "h6": 8.0, "h24": 15.3},
+        dedup_key="dex:test:smoke:h1:UP:000000000000",
     )
-    
-    print(f"Đang gửi bài: {test_article.title}")
-    success = send_telegram(test_article)
-    
-    if success:
-        print("\n✅ Test gửi Telegram thành công.")
+    print(test_signal.format_telegram_html())
+    print()
+    if "--live" in sys.argv:
+        ok = send_signal(test_signal)
+        print("✅ Gửi thành công." if ok else "❌ Gửi thất bại — kiểm tra BOT_TOKEN/CHAT_ID.")
     else:
-        print("\n❌ Gửi thất bại. Kiểm tra TOKEN/CHAT_ID hoặc bài báo có phải Bullish/Bearish không.")
+        print("(dry) Thêm --live để gửi thật.")

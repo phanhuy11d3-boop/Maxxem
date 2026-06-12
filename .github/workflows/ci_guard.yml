@@ -40,24 +40,21 @@ jobs:
           fi
           echo "✅ PASS: Không có Database URL bị hardcode."
 
-      # ── Kiến trúc: ngăn dùng lại module cũ đã bị xóa ──────────────────────
-      - name: "[Architecture] No import from storage.sqlite"
+      # ── Kiến trúc: ngăn hồi sinh đường news/LLM đã xóa (pivot 2026-06-12) ──
+      - name: "[Architecture] No legacy news/LLM imports"
         run: |
-          if grep -rn "from storage.sqlite" --include="*.py" .; then
-            echo "❌ FAIL: Phát hiện import từ storage.sqlite (đã deprecated). Dùng storage.postgres."
+          if grep -rnE "from (models\.article|scrapers\.generic_rss|scrapers\.fast_signals|processors)|import (feedparser|openai)" --include="*.py" .; then
+            echo "❌ FAIL: Phát hiện import từ đường news/LLM đã xóa. Sản phẩm là DEX-only."
             exit 1
           fi
-          echo "✅ PASS: Không có import từ module cũ storage.sqlite."
+          echo "✅ PASS: Không có tàn dư news/LLM."
 
-      # ── Chất lượng code: validate models không bị vỡ ──────────────────────
-      - name: "[Test] Validate Article model (Smoke Test)"
-        run: python models/article.py
+      # ── Chất lượng code: validate model không bị vỡ ──────────────────────
+      - name: "[Test] Validate PairSignal model (Smoke Test)"
+        run: python models/signal.py
+
+      - name: "[Test] Compile core"
+        run: python -m py_compile main.py models/signal.py storage/postgres.py scrapers/dexscreener.py utils/notifier.py
 
       - name: "[Test] Run Unit Tests"
         run: python -m pytest tests/unit -q
-
-      # ── Trọng tài Kiến trúc: Monitor Agent ────────────────────────────────
-      - name: "[Audit] Run Executable Monitor Agent"
-        run: python scripts/audit_agent.py
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}

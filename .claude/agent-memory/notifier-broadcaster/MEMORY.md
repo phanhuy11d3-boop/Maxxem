@@ -1,4 +1,3 @@
 # Memory Index
 
-- [Diagnose scripts cp1252 crash](diagnose-scripts-cp1252-crash.md) — diagnose_telegram2.py still crashes on CJK titles (script 1 patched); exit 1 != delivery failure
-- [tg_status vs tg_sent mismatch](tg-status-vs-tg-sent-mismatch.md) — dual delivery columns disagree; tg_sent is authoritative, no 'expired' sweep exists
+> 2026-06-12: dự án pivot DEX-only — memory về tg_sent/tg_status kép và diagnose_telegram*.py đã xóa (schema + scripts không còn). Outbox mới: bảng `signals`, một cột `tg_status`, xem `scripts/diagnose_outbox.py`. Console Windows vẫn cần PYTHONIOENCODING=utf-8.

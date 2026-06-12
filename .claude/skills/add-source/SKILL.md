@@ -1,54 +1,62 @@
 ---
 name: add-source
-description: Add a secondary legacy RSS/news source to CryptoSentinel following the full validation procedure. Use only for RSS/news context, not for primary DEX price-move alerts.
-argument-hint: "[feed-url] [tier 0|1|2]"
+description: Add a new watched DEX pair (price-data source) to the CryptoSentinel watchlist following the full validation procedure — resolve the real pairAddress, verify liquidity and symbols against the live DEXScreener API, then pin it in config/dexscreener.yaml.
+argument-hint: "[chain] [pair or token, e.g. solana WIF/SOL]"
 ---
 
-# Add Source - legacy RSS/news procedure
+# Add Source — watched DEX pair procedure
 
-Adding a source is NOT just editing `config/sources.yaml`. This skill is for
-secondary RSS/news context only. The primary product is DEX price-move alerts;
-use `dexscreener-watchlist` for watched coin/pair movements.
+A "source" in CryptoSentinel v3 is a watched pair on DEXScreener. Adding one is
+NOT just editing `config/dexscreener.yaml`: a wrong `pairAddress` means every
+future alert lies about the token. Validate first, pin exactly, then verify.
 
-## 1. Validate the feed first
-
-```powershell
-py -3 .claude/skills/add-source/scripts/validate_feed.py <feed-url>
-```
-
-The script encodes the project's hard-learned lessons (theblock.co 403, Blockworks 200-but-stale, DL News tombstone). Only proceed on `verdict: GOOD`. On `BAD`/`WARN`, report to the operator and stop — do not add a dead source.
-
-## 2. Add to config/sources.yaml
-
-- Pick a canonical `name` — it must be unique and is the EXACT key used for tier membership in step 3.
-- Add `- name:` / `url:` under the matching tier comment block (Tier 0 fast wires / Tier 1 mainstream / Tier 2 supplementary). The comment blocks are documentation only — they do not set the tier.
-
-## 3. Wire the tier (the gotcha)
-
-Tier is decided by source-name sets hard-coded in TWO files that must stay in sync:
-
-| Tier requested | Action |
-|---|---|
-| Tier 0 (fast wire) | Add the name to `FAST_SIGNAL_SOURCES` in `main.py` AND `agentic_runtime.py` (it is auto-included in TIER1 via the `*FAST_SIGNAL_SOURCES` splat) |
-| Tier 1 | Add the name to `TIER1_SOURCES` in `main.py` AND `agentic_runtime.py` |
-| Tier 2 | Nothing — any source not in those sets is Tier-2 by default (goes through 8B triage) |
-
-Remember: Tier-0/Tier-1 bypass triage and always hit the 70B analyzer (recall-first), so promoting a noisy source to Tier-1 has a direct token cost.
-
-## 4. Test a real parse of the new feed
+## 1. Validate the pair against the live API
 
 ```powershell
-py -3 -c "from scrapers.generic_rss import scrape_all_feeds; arts = [a for a in scrape_all_feeds() if a.source == '<name>']; print(len(arts)); [print(a.published_at, a.title[:70]) for a in arts[:3]]"
+py -3 .claude/skills/add-source/scripts/validate_pair.py <chain> <pairAddress>
+# or discover candidates first:
+py -3 .claude/skills/add-source/scripts/validate_pair.py --search "WIF/SOL"
 ```
 
-(Adapt to the actual public function in `scrapers/generic_rss.py` if it differs.) Confirm: articles parse into the `Article` model, timestamps are timezone-aware UTC, titles are clean.
+The script prints verdict GOOD/WARN/BAD with real liquidity, volume, and the
+actual base/quote symbols the API returns. Only proceed on `GOOD`. On `WARN`
+(low liquidity) ask the operator; on `BAD` stop — do not add a dead or fake pair.
 
-## 5. Run the unit suite
+`--search` lists the top-liquidity matching pairs so you can pick the canonical
+pool. NEVER ship a search-only entry to production.
+
+## 2. Add to config/dexscreener.yaml
+
+Every production entry must pin ALL four identity fields:
+
+```yaml
+  - name: "WIF/SOL"
+    query: "WIF/SOL"            # chỉ dùng cho diagnose/khám phá
+    chainId: "solana"
+    pairAddress: "<address từ bước 1>"
+    baseSymbol: "WIF"           # phải khớp symbol API trả về
+    quoteSymbol: "SOL"
+```
+
+Optional per-pair overrides when the pair's volatility profile differs from the
+global defaults: `thresholds_pct`, `min_volume_usd`, `min_liquidity_usd`.
+
+## 3. Verify the scanner sees it
+
+```powershell
+py -3 scripts/diagnose_dexscreener.py
+```
+
+The new pair must appear with real numbers (not `[MISS]`). A symbol mismatch
+prints an error and the pair is skipped — fix the config, don't bypass the guard.
+
+## 4. Run the unit suite
 
 ```powershell
 py -3 -m pytest tests/unit -q
 ```
 
-## 6. Report
+## 5. Report
 
-Source name, URL, tier + files touched, validate_feed verdict, parse sample, test result. If the operator asked for Tier 1, mention the token-cost implication once.
+Pair name, chain, pinned address, validation verdict (liquidity/volume numbers),
+any per-pair overrides chosen and why, diagnosis line, test result.

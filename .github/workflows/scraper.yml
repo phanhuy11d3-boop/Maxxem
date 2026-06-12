@@ -45,19 +45,8 @@ jobs:
           done
           echo "Hết ca sau $i vòng."
         env:
+          # v3 DEX-only: không còn LLM/RSS — chỉ cần DB + Telegram.
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          # Ca đêm dùng Groq (endpoint public, OpenAI-compatible). Chỉ key là secret;
-          # base URL + tên model để thẳng ở đây cho dễ đổi. Ca ngày trên máy operator
-          # dùng 9Router localhost qua .env — hai ca chung DB nên không trùng tin.
-          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
-          LLM_BASE_URL: https://api.groq.com/openai/v1
-          LLM_MODEL: llama-3.3-70b-versatile
-          LLM_MODEL_FAST: llama-3.1-8b-instant
-          # Free tier 70B chỉ ~100k token/ngày — ca đêm sẽ chạm trần giữa chừng.
-          # 8B có quota ~500k token/ngày làm lưới đỡ: 70B 429 → failover tức thì.
-          LLM_MODEL_BACKUP: llama-3.1-8b-instant
-          UW_API_KEY: ${{ secrets.UW_API_KEY }}
-          ARKHAM_API_KEY: ${{ secrets.ARKHAM_API_KEY }}
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
           ENABLE_OPS_TELEMETRY: "0"

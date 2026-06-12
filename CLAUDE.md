@@ -6,104 +6,108 @@ file wins.
 
 ## Product Truth
 
-CryptoSentinel is being rebuilt into a DEXScreener-style price-move alert system.
-The first-class output is direct, numeric coin/pair movement: which pair moved,
-by how much, over which horizon, with what volume, liquidity, buy/sell activity,
-and a source link.
+CryptoSentinel IS a DEXScreener-style price-move alert system. The only output
+is direct, numeric coin/pair movement: which pair moved, by how much, over
+which horizon, with what volume, liquidity, buy/sell activity, and a chart link.
 
-RSS/news and LLM analysis are secondary context. They must not crowd out direct
-pair movement alerts, and they must never invent numbers for a DEX alert.
+There is NO news. NO RSS. NO LLM. NO sentiment. NO bullish/bearish labels.
+The direction of a move is the sign of `change_pct` — a fact, not an opinion.
+The big-bang removal of the legacy news pipeline was executed 2026-06-12; the
+old `articles` table remains in the DB as frozen history only.
 
 ## Non-Negotiables
 
-1. **DEX-first**: `config/dexscreener.yaml`, `scrapers/dexscreener.py`, and
-   `scripts/diagnose_dexscreener.py` are the product core until the refactor
-   introduces the new signal engine.
+1. **DEX-only**: `config/dexscreener.yaml`, `scrapers/dexscreener.py`,
+   `models/signal.py`, `storage/postgres.py`, `utils/notifier.py`, `main.py`
+   are the whole product. Do not reintroduce news/LLM paths.
 2. **Pinned pairs only in production**: every production watchlist entry must
-   include `chainId`, `pairAddress`, `baseSymbol`, and `quoteSymbol`. Search-only
-   entries are allowed only during diagnosis.
+   include `chainId`, `pairAddress`, `baseSymbol`, and `quoteSymbol`. Search
+   resolution is allowed only in diagnosis/discovery.
 3. **No silent quiet**: if alerts are low, first prove whether no watched pair
    crossed thresholds or the scanner is broken:
-   `py -3 scripts/diagnose_dexscreener.py`.
-4. **No hallucinated metrics**: price change, volume, liquidity, txns, and pair
-   identity come from market/on-chain APIs, not from an LLM.
-5. **Live output is explicit**: commands that can write production DB state or
-   send Telegram messages must be described as live-fire and should require an
-   explicit flag or human intent.
-6. **Stale protection**: trading alerts older than the configured freshness
-   window must expire instead of being sent late.
-7. **Outbox discipline**: Telegram delivery goes through `tg_status`; do not
-   treat `processed=True` alone as proof that a signal was delivered.
-8. **Context hygiene**: old memory and archived docs are historical evidence,
-   not current source of truth. Do not let old RSS/LLM assumptions steer new
-   DEX-first design.
+   `py -3 scripts/diagnose_dexscreener.py`. Quiet with a healthy scanner is a
+   valid, healthy state.
+4. **No hallucinated metrics**: every number in an alert comes from the
+   DEXScreener API response. Nothing is estimated, labeled, or narrated.
+5. **Live output is explicit**: `py -3 main.py`, `py -3 utils/notifier.py
+   --live`, and preflight `--live` write production DB state and/or send
+   Telegram. Name them as live-fire before running.
+6. **Stale protection**: alerts older than 30 minutes expire
+   (`expire_stale_tg_queue`) instead of being sent late. A late price alert is
+   a wrong price alert.
+7. **Outbox discipline**: delivery state lives in `signals.tg_status`
+   (pending → sent | failed → expired) with `claim_tg_send_slot` lease
+   serializing the two production shifts. Never bypass the claim.
+8. **Context hygiene**: old memory, archived docs, and git history about the
+   news/LLM era are historical evidence, not current truth. Do not let them
+   steer design.
 9. **SOP form stays Claude-compatible**: project subagents live in
-   `.claude/agents/*.md`; project skills live in
-   `.claude/skills/<skill-name>/SKILL.md`; both use YAML frontmatter.
-10. **Refactor by strangler migration**: keep the current working bot alive while
-    building the new package around it, then retire legacy paths with tests and
-    migration notes.
+   `.claude/agents/*.md`; project skills in `.claude/skills/<name>/SKILL.md`;
+   both use YAML frontmatter.
+10. **Schema changes are additive**: `init_db()` stays idempotent; no
+    destructive statements on live tables without explicit operator request.
 
 ## Source-Of-Truth Order
 
 1. `CLAUDE.md`
-2. `docs/refactor-master-plan.md`
-3. Current code and tests
-4. `docs/architecture.md`, `docs/operations.md`, `docs/guardrails.md`
+2. Current code and tests
+3. `docs/architecture.md`, `docs/operations.md`, `docs/guardrails.md`
+4. `docs/refactor-master-plan.md` (executed plan + risk register)
 5. `.claude/agents/*` and `.claude/skills/*`
 6. `MEMORY.md` and `.claude/agent-memory/*`
 
 If a lower layer disagrees with a higher layer, update the lower layer or call
 out the mismatch. Do not silently follow the older layer.
 
-## Current Runtime Map
+## Runtime Map
 
-| Area | Current file |
+| Area | File |
 |---|---|
-| Production entrypoint | `main.py` |
-| Experimental agentic runtime | `agentic_runtime.py` |
-| DEX price-move scanner | `scrapers/dexscreener.py` |
-| DEX watchlist/thresholds | `config/dexscreener.yaml` |
-| DEX diagnosis | `scripts/diagnose_dexscreener.py` |
-| RSS/news secondary ingest | `scrapers/generic_rss.py`, `config/sources.yaml` |
-| Optional fast APIs | `scrapers/fast_signals.py` |
-| LLM news analysis | `processors/insight_extractor.py` |
-| Data contract | `models/article.py` |
-| Storage/outbox | `storage/postgres.py` |
-| Telegram delivery | `utils/notifier.py` |
+| Orchestrator (1 vòng pipeline) | `main.py` |
+| Data contract + Telegram render | `models/signal.py` (`PairSignal`) |
+| DEX scanner (batch fetch + rules) | `scrapers/dexscreener.py` |
+| Watchlist/thresholds | `config/dexscreener.yaml` |
+| Storage + outbox | `storage/postgres.py` (bảng `signals`) |
+| Telegram delivery + heartbeat | `utils/notifier.py` |
+| Scanner diagnosis (read-only) | `scripts/diagnose_dexscreener.py` |
+| Outbox diagnosis (read-only) | `scripts/diagnose_outbox.py` |
+| Day shift scheduler | `scripts/run_local_pipeline.ps1` + `.vbs` (Task Scheduler) |
+| Night shift scheduler | `.github/workflows/scraper.yml` (GH Actions shift loop) |
 
 ## Safe Commands
 
 | Purpose | Command |
 |---|---|
 | Unit tests | `py -3 -m pytest tests/unit -q` |
-| Compile core files | `py -3 -m py_compile main.py agentic_runtime.py models/article.py storage/postgres.py scrapers/dexscreener.py scrapers/generic_rss.py processors/insight_extractor.py utils/notifier.py` |
+| Compile core files | `py -3 -m py_compile main.py models/signal.py storage/postgres.py scrapers/dexscreener.py utils/notifier.py` |
 | Diagnose DEX scanner | `py -3 scripts/diagnose_dexscreener.py` |
+| Diagnose outbox | `py -3 scripts/diagnose_outbox.py` |
 | Dry preflight | `py -3 .claude/skills/preflight/scripts/run_preflight.py` |
-| Live production run | `py -3 main.py` |
-| Live experimental agentic run | `py -3 main.py --agentic` |
+| Live production run | `py -3 main.py` (LIVE-FIRE) |
 
-`py -3 main.py`, `py -3 main.py --legacy`, and `py -3 main.py --agentic` can
-write DB state and send Telegram. Use them only when a live run is intended.
+## Telegram Format Contract
 
-## Refactor North Star
+Every alert renders from `PairSignal.format_telegram_html()`:
 
-The target architecture is documented in `docs/refactor-master-plan.md`. The
-new repo should converge toward a package-style structure with explicit domains:
-market data ingestion, signal engine, storage, delivery, observability, and SOPs.
-Legacy `Article`/RSS/LLM code remains only as a compatibility layer until the new
-`SignalEvent` and alert pipeline replace it.
+- line 1 hook: 🚀/🩸 + pair + % + horizon;
+- price + DEX · chain;
+- multi-horizon row (5m/1h/6h/24h);
+- volume + liquidity; buys/sells; market cap khi có;
+- `⚠️ Low liquidity — DYOR` khi liquidity < $100k;
+- chart link + giờ ICT.
+
+No sentiment line, no urgency labels, no AI disclaimer, no news layout. Tests
+in `tests/unit/test_signal_format.py` enforce zero banned words.
 
 ## Agent And Skill Policy
 
 - Keep subagent frontmatter short and discoverable: `name`, `description`,
-  `tools`, optional `memory`, optional `skills`.
-- Keep skill frontmatter short: `name`, `description`, optional safety fields
-  such as `disable-model-invocation` and `allowed-tools`.
-- Skills should load detailed context only when needed. Prefer small procedures,
-  helper scripts, and clear verification commands over long essays.
-- Any skill that can touch production DB or Telegram must say so in the first
-  screen and require an explicit live flag in its script.
+  `tools`, optional `memory`, optional `skills`, optional read-only hooks.
+- Read-only agents (db-auditor, notifier-broadcaster) are guarded by
+  `scripts/hooks/guard_readonly.py --block sqlwrite livefire`.
+- Skills load detailed context only when needed. Any skill that can touch
+  production DB or Telegram must say so on the first screen and require an
+  explicit live flag.
 
 ## Business Bar
 
@@ -116,5 +120,4 @@ A change is valuable only if it improves at least one of these:
 - stronger evidence in every alert;
 - safer operations with fewer silent failures.
 
-Cosmetic docs, generic crypto-news features, and LLM-only commentary do not pass
-the bar unless they support the DEX-first alert product.
+Generic crypto-news features and LLM commentary are out of scope permanently.

@@ -1,6 +1,6 @@
 ---
 name: cadence-check
-description: Check the REAL cadence of the two-shift CryptoSentinel production — local Task Scheduler day shift + GH Actions 5.5h loop night shift — against the 30-minute stale window. Use when asking whether the pipeline is running on schedule, why articles die stale, why the bot went quiet, or after editing the workflow schedule.
+description: Check the REAL cadence of the two-shift CryptoSentinel production — local Task Scheduler day shift + GH Actions 5.5h loop night shift — against the 30-minute stale window. Use when asking whether the pipeline is running on schedule, why price alerts expire stale, why the bot went quiet, or after editing the workflow schedule.
 allowed-tools: Bash(py -3 .claude/skills/cadence-check/scripts/*)
 context: fork
 agent: ops-manager
@@ -34,16 +34,17 @@ arithmetic — interpret it:
    word alone:
    - *"Is the pipeline running right now?"* → `verdict` (scope = last 6h),
      `minutes_since_last_activity`, `gh_shift_active` / local shift alive.
-   - *"Did we miss news in the window?"* → `coverage_pct_window` +
+   - *"Did we miss price moves in the window?"* → `coverage_pct_window` +
      `dead_air_gaps`. A `CADENCE OK` verdict with low 24h coverage means
-     "healthy now, but articles WERE missed earlier today" — say exactly that.
+     "healthy now, but moves WERE missed earlier today" — say exactly that.
 2. Explain the consequence in CryptoSentinel terms: every `dead_air_gap` is a
-   window where new articles expired stale (>30 min) before any run could pick
-   them up — they never reach Telegram and join the unprocessed backlog.
+   window where pair moves either were never scanned or their alerts expired
+   stale (>30 min) before any run could dispatch them — they never reach
+   Telegram. For a price-alert product, a missed window is a missed trade.
 3. Call out any non-success runs listed.
 4. If DEGRADED/BROKEN, say WHICH shift is failing:
    - `local_log` stale or missing while it's daytime (ICT) → check the
-     `CryptoSentinel-Pipeline` scheduled task and the 9Router gateway on the PC.
+     `CryptoSentinel-Pipeline` scheduled task on the PC.
    - `gh_shift_active: no` and no recent GH activity → check whether the last
      shift ended and the queued one never started; a manual `workflow_dispatch`
      on `main` starts a new shift immediately.

@@ -7,7 +7,7 @@ Night shift = GH Actions scraper.yml, one run = a ~5h30 internal loop ("shift").
 Old versions measured gaps between *creation times* of scheduled GH runs —
 meaningless under the shift model (one run covers up to 350 min) and blind to
 the local shift. This version measures timeline COVERAGE: every activity
-interval [start, end] from either shift serves articles published from
+interval [start, end] from either shift serves price-move signals observed from
 start - STALE_WINDOW up to end. Dead air = timeline outside that reach.
 
 The SKILL.md asks Claude to interpret this output — the arithmetic lives
@@ -22,7 +22,7 @@ from pathlib import Path
 
 import requests
 
-STALE_WINDOW_MIN = 30     # articles older than this die unprocessed
+STALE_WINDOW_MIN = 30     # signals older than this expire unsent
 BROKEN_AFTER_MIN = 120    # no activity from EITHER shift for 2h => BROKEN
 WINDOW_HOURS = 24         # analysis window
 VERDICT_RECENT_HOURS = 6  # gaps older than this are history, not the verdict
@@ -179,7 +179,7 @@ def main():
     coverage = 100 * (1 - dead / total)
     print(f"coverage_pct_window: {coverage:.0f}%")
     if gaps:
-        print(f"dead_air_gaps ({len(gaps)}, articles published here died stale):")
+        print(f"dead_air_gaps ({len(gaps)}, signals observed here died stale):")
         for s, e in gaps:
             print(f"  - {s:%m-%d %H:%M} -> {e:%m-%d %H:%M} UTC "
                   f"({(e - s).total_seconds() / 60:.0f} min)")

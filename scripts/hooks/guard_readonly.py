@@ -5,24 +5,18 @@ Claude Code pipes the hook payload as JSON on stdin. We inspect the shell
 command about to run and exit 2 (block, with feedback on stderr) when it
 matches a forbidden group passed on the CLI, e.g.:
 
-    py -3 scripts/hooks/guard_readonly.py --block unstick marktg sqlwrite
+    py -3 scripts/hooks/guard_readonly.py --block sqlwrite livefire
 """
 import json
 import re
 import sys
 
 GROUPS = {
-    "unstick": (
-        re.compile(r"unstick_retry\.py", re.I),
-        "Blocked by guard_readonly hook: scripts/unstick_retry.py WRITES to the "
-        "production DB (resets retry_count). This agent is read-only - report the "
-        "stuck rows and ask the main session to run it.",
-    ),
-    "marktg": (
-        re.compile(r"diagnose_marktg\.py", re.I),
-        "Blocked by guard_readonly hook: scripts/diagnose_marktg.py live-fires a "
-        "real Telegram message and UPDATEs the DB. This agent is read-only - ask "
-        "the main session to run it.",
+    "livefire": (
+        re.compile(r"(notifier\.py.*--live|main\.py\b|run_preflight\.py.*--live)", re.I),
+        "Blocked by guard_readonly hook: this command live-fires the production "
+        "pipeline or sends a real Telegram message. This agent is read-only - "
+        "report the need and let the main session run it.",
     ),
     "sqlwrite": (
         re.compile(r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|TRUNCATE)\b", re.I),

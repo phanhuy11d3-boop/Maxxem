@@ -1,4 +1,5 @@
 # Memory Index
 
-- [Baseline impact distribution](baseline-impact-distribution.md) — mốc 2026-06-10: ~60% neutral lifetime, 24h = 21 actionable/9 neutral, quirks calibration cần theo dõi
-- [Env quirks khi chạy diagnose](env-quirks-diagnostics.md) — sandbox chặn 5432, cần PYTHONIOENCODING=utf-8, 8B trả fenced JSON dù bật JSON mode (triage fallback anti-miss)
+- [Env quirks khi chạy diagnose](env-quirks-diagnostics.md) — sandbox chặn 5432, cần PYTHONIOENCODING=utf-8 (phần LLM/8B trong file là lịch sử, không còn áp dụng)
+
+> 2026-06-12: dự án pivot DEX-only — vai trò agent đổi từ LLM calibration sang threshold/rule calibration; baseline sentiment cũ đã xóa.

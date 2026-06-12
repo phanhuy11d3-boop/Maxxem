@@ -1,87 +1,98 @@
 # CryptoSentinel
 
-Theo dõi biến động giá coin/pair trực tiếp kiểu DEXScreener → bổ sung tin crypto nhanh → phân phối Telegram **trading-grade**: cadence 1 phút, stale 30 phút, outbox Telegram, recall-first (nhãn `[?]` low confidence thay vì im lặng).
+Bot cảnh báo **biến động giá coin/pair trực tiếp** kiểu DEXScreener → Telegram.
+
+Một alert = một move thật của một pair thật: `+12.4% (1h)`, giá, volume,
+liquidity, buys/sells, link chart. **Không news. Không LLM. Không nhãn
+bullish/bearish** — hướng đi của giá là con số, trader tự đọc trong 2 giây.
+
+```text
+🚀 WIF/SOL +12.4% · 1h
+💰 $2.345 · Raydium · Solana
+⏳ 5m +1.1% | 1h +12.4% | 6h +8.0% | 24h +15.3%
+📊 Vol 1h $850.0K · 💧 Liq $2.4M
+🟢 221 buys · 🔴 109 sells
+🧢 MC $2.2B
+
+📈 Chart — DEXScreener
+⏱ 23:04 ICT
+```
+
+Trading-grade: cadence 1 phút, alert quá 30 phút tự expire (không bao giờ gửi
+giá nguội), outbox chống gửi trùng giữa 2 ca production.
 
 ## Stack
 
 | Thành phần | Công nghệ |
 |---|---|
 | Runtime | Python 3.11+ |
-| LLM | Gateway OpenAI-compatible (`LLM_BASE_URL` + `LLM_MODEL`, tùy chọn `LLM_MODEL_FAST`/`LLM_MODEL_POWER`) |
-| DB | Supabase / PostgreSQL (`storage/postgres.py`, connection pool) |
-| Scheduler | Hai ca: **Task Scheduler local** (ngày, cadence 1 phút) + **GH Actions shift loop** (đêm, mỗi run là ca ~5h30 tự loop mỗi phút — GH không tôn trọng cron mỗi-phút) |
-| Output | Telegram Bot API |
-| Ingest | `scrapers/dexscreener.py` (DEX pair moves) + `feedparser` (RSS) + `scrapers/fast_signals.py` (API tùy chọn) |
+| Nguồn dữ liệu | DEXScreener public API (`scrapers/dexscreener.py`, batch theo chain) |
+| DB | Supabase / PostgreSQL (`storage/postgres.py`, bảng `signals` + outbox) |
+| Scheduler | Hai ca: **Task Scheduler local** (ngày, cadence 1 phút) + **GH Actions shift loop** (đêm, mỗi run là ca ~5h30 tự loop mỗi phút) |
+| Output | Telegram Bot API (HTML price-board) |
 
-## Luồng tóm tắt
+## Luồng
 
 ```text
 Shift (local 1m / GH loop) → main.py
-  → expire + dispatch TG backlog
-  → scrape (DEXScreener pair moves + RSS + optional fast APIs)
-  → upsert / dedup Postgres
-  → LLM (tiered: Tier-1 skip triage; Tier-2 triage)
-  → mark_processed_with_tg → dispatch TG queue
+  → expire stale + dispatch TG backlog
+  → scan DEXScreener watchlist (batch, pinned pairs)
+  → PairSignal vượt ngưỡng → insert (dedup cooldown bucket)
+  → dispatch TG queue (claim chống trùng 2 ca)
   → heartbeat (chỉ khi ENABLE_OPS_TELEMETRY bật)
 ```
 
-## Cấu trúc thư mục (lõi)
+## Cấu trúc thư mục
 
 ```text
 crypto-sentinel/
-├── main.py
-├── agentic_runtime.py          # --agentic, fallback legacy
-├── models/article.py
-├── scrapers/generic_rss.py
-├── scrapers/dexscreener.py
-├── scrapers/fast_signals.py
-├── processors/insight_extractor.py
-├── storage/postgres.py
-├── utils/notifier.py
-├── config/sources.yaml
-├── config/dexscreener.yaml
-├── docs/
-│   ├── architecture.md         # Kiến trúc + schema + outbox (SSOT kỹ thuật)
-│   ├── guardrails.md
-│   └── operations.md           # QA, smoke test, biến env
+├── main.py                     # orchestrator DEX-only
+├── models/signal.py            # PairSignal — data contract + Telegram render
+├── scrapers/dexscreener.py     # scanner: batch fetch + trigger rules
+├── storage/postgres.py         # bảng signals + outbox state machine
+├── utils/notifier.py           # Telegram delivery + heartbeat
+├── config/dexscreener.yaml     # watchlist + thresholds (SSOT cấu hình)
+├── scripts/
+│   ├── diagnose_dexscreener.py # read-only: trigger/no-trigger từng pair
+│   ├── diagnose_outbox.py      # read-only: outbox + KPI delivery
+│   └── run_local_pipeline.*    # ca ngày Task Scheduler
+├── docs/                       # architecture, operations, guardrails, plan
 ├── .github/workflows/scraper.yml
 ├── tests/unit/
-├── requirements.txt
-├── .env.example
-├── CLAUDE.md                   # Lệnh nhanh cho AI/agent playbook
-└── MEMORY.md
+├── .claude/                    # agents + skills + rules (SOP cho AI)
+└── CLAUDE.md                   # hiến pháp dự án
 ```
 
 ## Biến môi trường
 
-Xem **`.env.example`**. Tóm tắt:
+Xem **`.env.example`**:
 
 | Biến | Mô tả |
 |---|---|
 | `DATABASE_URL` | URI PostgreSQL Supabase |
-| `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL` | LLM gateway OpenAI-compatible (URL phải public khi chạy trên Actions) |
 | `BOT_TOKEN` | Telegram bot |
-| `CHAT_ID` | Kênh/ group **signal** |
-| `PREMIUM_CHAT_ID` | Tùy chọn |
-| `UW_API_KEY`, `ARKHAM_API_KEY` | Tùy chọn (fast signals) |
-| `ADMIN_CHAT_ID`, `HEARTBEAT_CHAT_ID` | Ops alerts / heartbeat (telemetry) |
-| `ENABLE_OPS_TELEMETRY` | `0` tắt, `1`/true bật heartbeat + admin alert |
+| `CHAT_ID` | Kênh signal chính |
+| `PREMIUM_CHAT_ID` | Tùy chọn — chỉ nhận move nóng (m5 ≥8% / bất kỳ khung ≥15%) |
+| `ADMIN_CHAT_ID`, `HEARTBEAT_CHAT_ID` | Ops alerts / heartbeat |
+| `ENABLE_OPS_TELEMETRY` | `0` tắt, `1` bật heartbeat + admin alert |
 
 ## CLI
 
-- **`py -3 main.py`** — Windows (Python Launcher).
-- **`python main.py`** — macOS/Linux/CI.
-- **`py -3 main.py --legacy`** — tương đương mặc định.
-- **`py -3 main.py --agentic`** — runtime agentic có fallback legacy.
-- **`py -3 -m pytest tests/unit`** — unit tests.
+- **`py -3 main.py`** — chạy 1 vòng pipeline (LIVE: ghi DB + gửi Telegram).
+- **`py -3 -m pytest tests/unit -q`** — unit tests.
+- **`py -3 scripts/diagnose_dexscreener.py`** — chẩn đoán scanner (read-only).
+- **`py -3 scripts/diagnose_outbox.py`** — chẩn đoán delivery (read-only).
+- **`py -3 .claude/skills/preflight/scripts/run_preflight.py`** — smoke trước commit (dry).
 
-Audit tĩnh DB (nếu có): `py -3 scripts/audit_agent.py`.
-Diagnose DEX price-move scanner: `py -3 scripts/diagnose_dexscreener.py`.
+## Watchlist
+
+Thêm/bớt pair: sửa `config/dexscreener.yaml`. Mỗi entry production phải pin đủ
+`chainId` + `pairAddress` + `baseSymbol` + `quoteSymbol` (chống nhầm token).
+Quy trình đầy đủ: skill `add-source` / `dexscreener-watchlist` trong `.claude/skills/`.
 
 ## Tài liệu
 
-- [`docs/refactor-master-plan.md`](docs/refactor-master-plan.md) — kế hoạch cải tổ DEX-first, repo structure mới, phase migration, rủi ro.
-- [`docs/architecture.md`](docs/architecture.md) — pipeline, DB, LLM, tiers, file map.
-- [`docs/guardrails.md`](docs/guardrails.md) — guardrails nội dung & sản phẩm.
+- [`docs/refactor-master-plan.md`](docs/refactor-master-plan.md) — kế hoạch + risk register của cuộc đại phẫu DEX-only (đã thực thi 2026-06-12).
+- [`docs/architecture.md`](docs/architecture.md) — pipeline, schema, outbox.
+- [`docs/guardrails.md`](docs/guardrails.md) — guardrails sản phẩm.
 - [`docs/operations.md`](docs/operations.md) — checklist vận hành & smoke test.
-- **`MEMORY.md`** — bài học lịch sử (AI).

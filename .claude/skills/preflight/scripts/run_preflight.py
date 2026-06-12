@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-"""Preflight smoke-test for orchestrator changes.
+"""Preflight smoke-test for orchestrator changes (v3 DEX-only).
 
 Dry by default: unit tests -> compile core modules -> DEX diagnosis.
-Use --live to append legacy pipeline -> agentic pipeline.
+Use --live to append one real pipeline run.
 
 WARNING: --live executes the REAL pipeline against the production DB
 and Telegram outbox, subject to the 30-minute stale window.
@@ -15,12 +15,9 @@ import time
 
 CORE_COMPILE_FILES = [
     "main.py",
-    "agentic_runtime.py",
-    "models/article.py",
+    "models/signal.py",
     "storage/postgres.py",
     "scrapers/dexscreener.py",
-    "scrapers/generic_rss.py",
-    "processors/insight_extractor.py",
     "utils/notifier.py",
 ]
 
@@ -31,10 +28,7 @@ DRY_STAGES = [
 ]
 
 LIVE_STAGES = [
-    ("legacy-pipeline", ["py", "-3", "main.py", "--legacy"], True),
-    # agentic is opt-in and must fall back to legacy on failure; its own
-    # crash is still a finding, so we run it but report rather than infer.
-    ("agentic-pipeline", ["py", "-3", "main.py", "--agentic"], False),
+    ("pipeline", ["py", "-3", "main.py"], True),
 ]
 
 

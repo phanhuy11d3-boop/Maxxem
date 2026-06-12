@@ -1,8 +1,10 @@
-"""DEXScreener price-movement scanner.
+"""DEXScreener price-movement scanner — sản phẩm lõi của CryptoSentinel.
 
-Produces deterministic, already-actionable Article objects for direct pair
-movement alerts: price change, liquidity, volume, buys/sells and DEX link.
-No LLM is required for this path.
+Quét watchlist pair đã pin (chainId + pairAddress), so với ngưỡng %/volume/
+liquidity, và emit PairSignal hoàn toàn deterministic. Không LLM, không news.
+
+Tối ưu: pair pin được fetch BATCH theo chain (API cho phép tới 30 address
+mỗi request) — watchlist 8 pair trên 2 chain = 2 HTTP call thay vì 8.
 """
 
 from __future__ import annotations
@@ -16,14 +18,17 @@ from typing import Any, Optional
 import requests
 import yaml
 
-from models.article import Article, MarketImpact
+from models.signal import HORIZONS, PairSignal
 
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://api.dexscreener.com"
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "dexscreener.yaml"
-HORIZONS = ("m5", "h1", "h6", "h24")
 HTTP_TIMEOUT_S = 10
+BATCH_MAX_ADDRESSES = 30  # giới hạn API /latest/dex/pairs
+
+# Dưới mức này alert vẫn gửi (nếu qua min_liquidity_usd) nhưng gắn cờ DYOR
+LOW_LIQUIDITY_FLAG_USD = 100_000
 
 
 def load_config(path: str | Path = CONFIG_PATH) -> dict:
@@ -61,21 +66,6 @@ def _num(value: Any, default: float = 0.0) -> float:
         return default
 
 
-def _fmt_usd(value: float) -> str:
-    if value >= 1_000_000:
-        return f"${value / 1_000_000:.1f}M"
-    if value >= 1_000:
-        return f"${value / 1_000:.1f}K"
-    if value >= 1:
-        return f"${value:.2f}"
-    return f"${value:.6f}"
-
-
-def _fmt_pct(value: float) -> str:
-    sign = "+" if value > 0 else ""
-    return f"{sign}{value:.1f}%"
-
-
 def _base_symbol(pair: dict) -> str:
     return str((pair.get("baseToken") or {}).get("symbol") or "").upper()
 
@@ -84,18 +74,13 @@ def _quote_symbol(pair: dict) -> str:
     return str((pair.get("quoteToken") or {}).get("symbol") or "").upper()
 
 
-def _pair_label(pair: dict) -> str:
-    base = _base_symbol(pair) or "TOKEN"
-    quote = _quote_symbol(pair) or "QUOTE"
-    return f"{base}/{quote}"
-
-
 def _symbol_matches(pair: dict, entry: dict) -> bool:
-    expected_base = str(entry.get("baseSymbol") or "").upper().strip()
-    expected_quote = str(entry.get("quoteSymbol") or "").upper().strip()
-    if expected_base and _base_symbol(pair) != expected_base:
+    """Chốt chặn nhầm token: symbol thực tế phải khớp symbol khai báo."""
+    expected_base = str(entry.get("baseSymbol") or "").upper().strip().lstrip("$")
+    expected_quote = str(entry.get("quoteSymbol") or "").upper().strip().lstrip("$")
+    if expected_base and _base_symbol(pair).lstrip("$") != expected_base:
         return False
-    if expected_quote and _quote_symbol(pair) != expected_quote:
+    if expected_quote and _quote_symbol(pair).lstrip("$") != expected_quote:
         return False
     return True
 
@@ -111,6 +96,7 @@ def _best_pair(candidates: list[dict], entry: dict) -> Optional[dict]:
 
 
 def fetch_pair(entry: dict) -> Optional[dict]:
+    """Fetch MỘT pair (dùng cho diagnose). Production dùng fetch_pairs_batch."""
     chain_id = entry.get("chainId")
     pair_address = entry.get("pairAddress")
     if chain_id and pair_address:
@@ -121,6 +107,7 @@ def fetch_pair(entry: dict) -> Optional[dict]:
         pair = pairs[0]
         return pair if _symbol_matches(pair, entry) else None
 
+    # Search-only: CHỈ cho diagnosis/khám phá — production phải pin pairAddress.
     query = entry.get("query") or entry.get("name")
     if not query:
         return None
@@ -128,7 +115,45 @@ def fetch_pair(entry: dict) -> Optional[dict]:
     return _best_pair(data.get("pairs") or [], entry)
 
 
+def fetch_pairs_batch(watchlist: list[dict]) -> dict[str, dict]:
+    """
+    Fetch mọi pair pin theo batch: gom pairAddress theo chain, mỗi chain
+    1 request (tối đa 30 address). Trả map "chain:address(lower)" -> pair dict.
+    Entry search-only bị bỏ qua (production-only path).
+    """
+    by_chain: dict[str, list[str]] = {}
+    for entry in watchlist:
+        chain = entry.get("chainId")
+        addr = entry.get("pairAddress")
+        if chain and addr:
+            by_chain.setdefault(chain.lower(), []).append(addr)
+
+    found: dict[str, dict] = {}
+    for chain, addresses in by_chain.items():
+        for i in range(0, len(addresses), BATCH_MAX_ADDRESSES):
+            chunk = addresses[i:i + BATCH_MAX_ADDRESSES]
+            try:
+                data = _get_json(f"/latest/dex/pairs/{chain}/{','.join(chunk)}")
+            except Exception as exc:
+                logger.warning("DEXScreener batch fetch failed (%s): %s", chain, exc)
+                continue
+            for pair in data.get("pairs") or []:
+                key = f"{str(pair.get('chainId', '')).lower()}:{str(pair.get('pairAddress', '')).lower()}"
+                found[key] = pair
+    return found
+
+
+def _entry_cfg(entry: dict, cfg: dict) -> dict:
+    """Ngưỡng hiệu lực cho một entry: global, override được per-pair."""
+    return {
+        "min_liquidity_usd": entry.get("min_liquidity_usd", cfg.get("min_liquidity_usd")),
+        "min_volume_usd": {**(cfg.get("min_volume_usd") or {}), **(entry.get("min_volume_usd") or {})},
+        "thresholds_pct": {**(cfg.get("thresholds_pct") or {}), **(entry.get("thresholds_pct") or {})},
+    }
+
+
 def _trigger(pair: dict, cfg: dict) -> Optional[tuple[str, float]]:
+    """Khung mạnh nhất vượt ngưỡng (qua gate liquidity + volume), hoặc None."""
     liquidity = _num((pair.get("liquidity") or {}).get("usd"))
     if liquidity < _num(cfg.get("min_liquidity_usd"), 0):
         return None
@@ -158,77 +183,81 @@ def _bucket(now: datetime, cooldown_minutes: int) -> str:
     return now.replace(minute=minute, second=0, microsecond=0).strftime("%Y%m%d%H%M")
 
 
-def build_alert_article(pair: dict, horizon: str, change_pct: float, cfg: dict, now: Optional[datetime] = None) -> Article:
+def build_signal(pair: dict, horizon: str, change_pct: float, cfg: dict,
+                 now: Optional[datetime] = None) -> PairSignal:
     now = now or datetime.now(timezone.utc)
-    label = _pair_label(pair)
-    base = _base_symbol(pair) or "TOKEN"
-    quote = _quote_symbol(pair) or "QUOTE"
-    price_usd = _num(pair.get("priceUsd"))
-    liquidity = _num((pair.get("liquidity") or {}).get("usd"))
-    volume = _num((pair.get("volume") or {}).get(horizon))
+    price_change = pair.get("priceChange") or {}
     txns = (pair.get("txns") or {}).get(horizon) or {}
-    buys = int(_num(txns.get("buys")))
-    sells = int(_num(txns.get("sells")))
+    chain = str(pair.get("chainId") or "")
+    address = str(pair.get("pairAddress") or "")
     direction = "UP" if change_pct > 0 else "DOWN"
-    impact = MarketImpact.BULLISH if change_pct > 0 else MarketImpact.BEARISH
-    abs_change = abs(change_pct)
-    urgency = "breaking" if horizon == "m5" and abs_change >= 8 else "important"
-    url = pair.get("url") or f"https://dexscreener.com/{pair.get('chainId')}/{pair.get('pairAddress')}"
     bucket = _bucket(now, int(cfg.get("cooldown_minutes", 15)))
-    dedup_key = f"dex:{pair.get('chainId')}:{pair.get('pairAddress')}:{horizon}:{direction}:{bucket}"
+    liquidity = _num((pair.get("liquidity") or {}).get("usd"))
 
-    title = f"{label} {direction} {_fmt_pct(change_pct)} in {horizon} | price {_fmt_usd(price_usd)}"
-    key = (
-        f"{label} {_fmt_pct(change_pct)} {horizon}; vol {_fmt_usd(volume)}, "
-        f"liq {_fmt_usd(liquidity)}, txns {buys}B/{sells}S."
-    )
-    summary = (
-        f"DEXScreener pair move on {pair.get('chainId')}/{pair.get('dexId')}: "
-        f"priceUsd={price_usd}, priceChange.{horizon}={change_pct}, "
-        f"volume.{horizon}={volume}, liquidity.usd={liquidity}, buys={buys}, sells={sells}, "
-        f"fdv={pair.get('fdv')}, marketCap={pair.get('marketCap')}."
-    )
-
-    return Article(
-        url=url,
-        dedup_key=dedup_key,
-        title=title,
-        source="DEXScreener",
-        published_at=now,
-        summary=summary,
-        # Không có sentiment: đây là số liệu giá trực tiếp, không phải suy đoán.
-        market_impact=impact,
-        key_takeaway=key[:300],
-        narrative_tag="DEX_MOVE",
-        affected_tokens=[f"${base}"],
-        urgency=urgency,
-        low_confidence=liquidity < 100_000,
-        published_from_source=True,
-        processed=True,
+    return PairSignal(
+        chain_id=chain,
+        dex_id=str(pair.get("dexId") or ""),
+        pair_address=address,
+        base_symbol=_base_symbol(pair) or "TOKEN",
+        quote_symbol=_quote_symbol(pair) or "QUOTE",
+        url=pair.get("url") or f"https://dexscreener.com/{chain}/{address}",
+        horizon=horizon,
+        change_pct=change_pct,
+        price_usd=_num(pair.get("priceUsd")),
+        volume_usd=_num((pair.get("volume") or {}).get(horizon)),
+        liquidity_usd=liquidity,
+        buys=int(_num(txns.get("buys"))),
+        sells=int(_num(txns.get("sells"))),
+        changes={h: _num(price_change.get(h)) for h in HORIZONS if price_change.get(h) is not None},
+        fdv=_num(pair.get("fdv")) or None,
+        market_cap=_num(pair.get("marketCap")) or None,
+        observed_at=now,
+        dedup_key=f"dex:{chain}:{address}:{horizon}:{direction}:{bucket}",
+        low_liquidity=liquidity < LOW_LIQUIDITY_FLAG_USD,
     )
 
 
-def fetch_dexscreener_alerts(config_path: str | Path = CONFIG_PATH) -> list[Article]:
+def scan_watchlist(config_path: str | Path = CONFIG_PATH) -> list[PairSignal]:
+    """
+    Quét toàn bộ watchlist, trả về danh sách PairSignal vượt ngưỡng.
+    API fail từng phần → bỏ qua phần đó, không sập pipeline.
+    """
     cfg = load_config(config_path)
     if not cfg.get("enabled", True):
         return []
 
-    alerts: list[Article] = []
-    for entry in cfg.get("watchlist") or []:
+    watchlist = cfg.get("watchlist") or []
+    pairs_map = fetch_pairs_batch(watchlist)
+
+    signals: list[PairSignal] = []
+    for entry in watchlist:
+        name = entry.get("name") or entry.get("pairAddress") or str(entry)
         try:
-            pair = fetch_pair(entry)
-            if not pair:
-                logger.warning("DEXScreener no pair for %s", entry)
+            chain = str(entry.get("chainId") or "").lower()
+            addr = str(entry.get("pairAddress") or "").lower()
+            pair = pairs_map.get(f"{chain}:{addr}")
+            if pair is None and not addr:
+                logger.warning("DEXScreener: entry %s chưa pin pairAddress — bỏ qua (production cần pin).", name)
                 continue
-            hit = _trigger(pair, cfg)
+            if pair is None:
+                logger.warning("DEXScreener: không có dữ liệu pair cho %s", name)
+                continue
+            if not _symbol_matches(pair, entry):
+                logger.error("DEXScreener: SYMBOL MISMATCH %s — API trả %s/%s, config khai %s/%s. Bỏ qua.",
+                             name, _base_symbol(pair), _quote_symbol(pair),
+                             entry.get("baseSymbol"), entry.get("quoteSymbol"))
+                continue
+
+            eff = _entry_cfg(entry, cfg)
+            hit = _trigger(pair, eff)
             if not hit:
                 continue
             horizon, change = hit
-            alerts.append(build_alert_article(pair, horizon, change, cfg))
+            signals.append(build_signal(pair, horizon, change, cfg))
         except Exception as exc:
-            logger.warning("DEXScreener fetch skipped for %s: %s", entry.get("name") or entry, exc)
-    logger.info("DEXScreener alerts: %s", len(alerts))
-    return alerts
+            logger.warning("DEXScreener scan skipped for %s: %s", name, exc)
+    logger.info("DEXScreener signals: %s", len(signals))
+    return signals
 
 
 if __name__ == "__main__":
@@ -236,5 +265,6 @@ if __name__ == "__main__":
 
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    for article in fetch_dexscreener_alerts():
-        print(article.title)
+    logging.basicConfig(level=logging.INFO)
+    for sig in scan_watchlist():
+        print(sig.pair_label, sig.direction, sig.change_pct, sig.horizon)
