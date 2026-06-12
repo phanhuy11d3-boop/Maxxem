@@ -126,6 +126,10 @@ def test_symbol_mismatch_guard():
     # tiền tố $ trong config không làm fail so khớp
     dollar = {"baseSymbol": "$WIF", "quoteSymbol": "SOL"}
     assert _symbol_matches(_pair(), dollar) is True
+    # API trả symbol có space thừa (vd 'Fartcoin ') không được làm skip oan
+    dirty = _pair()
+    dirty["baseToken"] = {"symbol": "Fartcoin "}
+    assert _symbol_matches(dirty, {"baseSymbol": "FARTCOIN", "quoteSymbol": "SOL"}) is True
 
 
 def test_entry_cfg_per_pair_override():

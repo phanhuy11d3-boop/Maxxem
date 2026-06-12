@@ -10,7 +10,8 @@ thresholds_pct:
   m5: 2.0
   h1: 4.0
   h6: 8.0
-  h24: 12.0
+  # 12 -> 8: move 8%/ngay voi mid-cap la dang dua tin (JUP +8.3% 2026-06-12 truot oan)
+  h24: 8.0
 watchlist:
   # query chỉ dùng cho diagnose/khám phá; production luôn fetch theo pairAddress.
   # Majors (SOL/WETH/WBTC) có per-pair thresholds_pct thấp hơn global:
@@ -66,3 +67,24 @@ watchlist:
     pairAddress: "0xA43fe16908251ee70EF74718545e4FE6C5cCEc9f"
     baseSymbol: "PEPE"
     quoteSymbol: "WETH"
+  # Meme volatility cao — nguon alert deu dan (them 2026-06-12, validate GOOD qua API:
+  # POPCAT $2.6M liq/$157K vol; FARTCOIN $5.2M/$366K; PENGU $2.2M/$74.5K).
+  # Luu y: 2 pool POPCAT/USDC meteora hien liq $600M nhung vol $4/ngay = pool gia, da loai.
+  - name: "POPCAT/SOL"
+    query: "POPCAT/SOL"
+    chainId: "solana"
+    pairAddress: "FRhB8L7Y9Qq41qZXYLtC2nw8An1RJfLLxRF2x9RwLLMo"
+    baseSymbol: "POPCAT"
+    quoteSymbol: "SOL"
+  - name: "FARTCOIN/SOL"
+    query: "FARTCOIN/SOL"
+    chainId: "solana"
+    pairAddress: "Bzc9NZfMqkXR6fz1DBph7BDf9BroyEf6pnzESP7v5iiw"
+    baseSymbol: "FARTCOIN"
+    quoteSymbol: "SOL"
+  - name: "PENGU/SOL"
+    query: "PENGU/SOL"
+    chainId: "solana"
+    pairAddress: "FAqh648xeeaTqL7du49sztp9nfj5PjRQrfvaMccyd9cz"
+    baseSymbol: "PENGU"
+    quoteSymbol: "SOL"

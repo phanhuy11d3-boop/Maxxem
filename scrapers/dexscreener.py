@@ -74,13 +74,18 @@ def _quote_symbol(pair: dict) -> str:
     return str((pair.get("quoteToken") or {}).get("symbol") or "").upper()
 
 
+def _norm_symbol(raw: str) -> str:
+    """Chuẩn hóa symbol để so khớp: API có thể trả 'Fartcoin ' (space thừa), '$WIF'."""
+    return str(raw or "").upper().strip().lstrip("$").strip()
+
+
 def _symbol_matches(pair: dict, entry: dict) -> bool:
     """Chốt chặn nhầm token: symbol thực tế phải khớp symbol khai báo."""
-    expected_base = str(entry.get("baseSymbol") or "").upper().strip().lstrip("$")
-    expected_quote = str(entry.get("quoteSymbol") or "").upper().strip().lstrip("$")
-    if expected_base and _base_symbol(pair).lstrip("$") != expected_base:
+    expected_base = _norm_symbol(entry.get("baseSymbol"))
+    expected_quote = _norm_symbol(entry.get("quoteSymbol"))
+    if expected_base and _norm_symbol(_base_symbol(pair)) != expected_base:
         return False
-    if expected_quote and _quote_symbol(pair).lstrip("$") != expected_quote:
+    if expected_quote and _norm_symbol(_quote_symbol(pair)) != expected_quote:
         return False
     return True
 
