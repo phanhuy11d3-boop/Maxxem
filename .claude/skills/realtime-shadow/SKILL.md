@@ -1,7 +1,11 @@
 ---
 name: realtime-shadow
 description: Inspect or operate realtime feed shadow mode. Shadow mode must not insert production signals or send Telegram.
-argument-hint: "[status|plan|provider]"
+arguments: [request]
+allowed-tools: Bash(py -3 ${CLAUDE_SKILL_DIR}/scripts/run_realtime_shadow.py*)
+context: fork
+agent: realtime-feed-researcher
+shell: powershell
 ---
 
 # Realtime Shadow
@@ -13,9 +17,8 @@ Realtime feeds are research/canary until promoted. They must run with
 
 1. Read source configuration and docs.
 2. Run read-only diagnostics if present:
-   ```powershell
-   py -3 scripts/diagnose_realtime_shadow.py
-   py -3 scripts/diagnose_sources.py
+   ```!
+   py -3 ${CLAUDE_SKILL_DIR}/scripts/run_realtime_shadow.py
    ```
 3. Verify the source is marked shadow/canary, not primary.
 4. Report coverage, freshness, errors, and promotion blockers.

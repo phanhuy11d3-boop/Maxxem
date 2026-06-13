@@ -16,9 +16,8 @@ evidence first, then recommend the narrowest pair/horizon fix.
 ## First Commands
 
 ```powershell
-py -3 scripts/diagnose_alert_rate.py
-py -3 scripts/backtest_thresholds.py
-py -3 scripts/diagnose_outbox.py
+py -3 .claude/skills/alert-rate-audit/scripts/run_alert_rate_audit.py
+py -3 .claude/skills/threshold-backtest/scripts/run_threshold_backtest.py
 ```
 
 ## Rules
@@ -27,4 +26,3 @@ py -3 scripts/diagnose_outbox.py
 - Do not drop production signals silently.
 - Prefer per-pair threshold overrides over global churn.
 - Score can prioritize/premium-route; it must never gate the main channel.
-

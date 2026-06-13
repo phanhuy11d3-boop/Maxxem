@@ -14,6 +14,7 @@ load_dotenv_if_present(ROOT)
 
 from psycopg2.extras import RealDictCursor  # noqa: E402
 
+from models.pair_signal import clean_symbol  # noqa: E402
 from storage.postgres import _get_pool  # noqa: E402
 
 WINDOW_HOURS = 24
@@ -50,8 +51,12 @@ def main() -> None:
                 print("  No alerts in window.")
             for row in rows:
                 avg_score = "-" if row["avg_score"] is None else f"{row['avg_score']:.1f}"
+                pair = (
+                    f"{clean_symbol(row['base_symbol']).upper()}/"
+                    f"{clean_symbol(row['quote_symbol']).upper()}"
+                )
                 print(
-                    f"  {row['base_symbol']}/{row['quote_symbol']} {row['chain_id']} "
+                    f"  {pair} {row['chain_id']} "
                     f"{row['horizon']:<3} n={row['n']:<3} "
                     f"max_abs={row['max_abs_change']:.1f}% avg_score={avg_score}"
                 )

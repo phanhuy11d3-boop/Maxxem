@@ -1,7 +1,11 @@
 ---
 name: source-health-audit
 description: Audit market-data source health and freshness. Use when the bot is quiet, DEX API errors appear, or a source may be stale/degraded.
-argument-hint: "[optional source/chain focus]"
+arguments: [focus]
+allowed-tools: Bash(py -3 ${CLAUDE_SKILL_DIR}/scripts/run_source_health_audit.py*)
+context: fork
+agent: source-resilience-engineer
+shell: powershell
 ---
 
 # Source Health Audit
@@ -11,10 +15,8 @@ Read-only unless the operator explicitly asks for a fix.
 ## Workflow
 
 1. Run:
-   ```powershell
-   py -3 scripts/diagnose_sources.py
-   py -3 scripts/diagnose_dexscreener.py
-   py -3 scripts/diagnose_outbox.py
+   ```!
+   py -3 ${CLAUDE_SKILL_DIR}/scripts/run_source_health_audit.py
    ```
 2. Interpret in pipeline order:
    - source health: healthy / degraded / unhealthy
@@ -27,4 +29,3 @@ Read-only unless the operator explicitly asks for a fix.
 - Healthy source + no trigger = OK quiet.
 - Degraded/unhealthy source + no trigger = not trustworthy.
 - Scanner triggered + outbox not sent = delivery problem, not source problem.
-

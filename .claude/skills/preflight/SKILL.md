@@ -3,6 +3,7 @@ name: preflight
 description: Dry smoke-test the repo before committing changes that touch runtime, scrapers, storage, or workflows. Runs unit tests, compile checks, and DEX diagnosis by default; live production pipeline requires --live.
 disable-model-invocation: true
 allowed-tools: Bash(py -3 .claude/skills/preflight/scripts/*)
+shell: powershell
 ---
 
 # Preflight - smoke before commit
@@ -21,7 +22,8 @@ Dry stages, in order:
 
 1. `pytest tests/unit -q` — required
 2. `py -3 -m py_compile ...` — required
-3. `py -3 scripts/diagnose_dexscreener.py` — required, read-only market scanner diagnosis
+3. `py -3 scripts/diagnose_claude_config.py` — required, read-only skill/subagent format diagnosis
+4. `py -3 scripts/diagnose_dexscreener.py` — required, read-only market scanner diagnosis
 
 ## Live Run
 

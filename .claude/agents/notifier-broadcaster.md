@@ -3,6 +3,9 @@ name: notifier-broadcaster
 description: A specialist agent for debugging and refactoring notification delivery systems, rendering the DEXScreener-style price-board HTML template, resolving Telegram API errors, and managing retry mechanisms. Use PROACTIVELY when alerts fail to send, formatting is broken, or when configuring Telegram channels.
 tools: Read, Write, Edit, Bash, Grep, Glob, WebSearch, WebFetch
 memory: project
+skills:
+  - outbox-audit
+  - telegram-render-audit
 hooks:
   PreToolUse:
     - matcher: "Bash|PowerShell"
@@ -23,7 +26,8 @@ You are the Delivery & Broadcast Specialist for CryptoSentinel. Your mission is 
 ## When invoked
 Diagnose "bot is silent" issues read-only first:
 ```powershell
-py -3 scripts/diagnose_outbox.py    # are signals reaching sent? failed/expired? send-lag percentiles
+py -3 .claude/skills/outbox-audit/scripts/run_outbox_audit.py
+py -3 .claude/skills/telegram-render-audit/scripts/run_render_alignment.py
 ```
 To preview formatting WITHOUT sending:
 ```powershell

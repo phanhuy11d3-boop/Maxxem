@@ -1,18 +1,19 @@
 ---
 name: incident-postmortem
 description: Produce a structured postmortem for source degradation, expired alerts, send-lag SLA breaches, duplicate sends, or unexpected quiet periods.
-argument-hint: "[incident window/focus]"
+arguments: [incident]
+allowed-tools: Bash(py -3 ${CLAUDE_SKILL_DIR}/scripts/collect_evidence.py*)
+context: fork
+agent: ops-manager
+shell: powershell
 ---
 
 # Incident Postmortem
 
 Run read-only diagnostics first:
 
-```powershell
-py -3 scripts/diagnose_sources.py
-py -3 scripts/diagnose_dexscreener.py
-py -3 scripts/diagnose_outbox.py
-py -3 scripts/diagnose_alert_rate.py
+```!
+py -3 ${CLAUDE_SKILL_DIR}/scripts/collect_evidence.py
 ```
 
 Report:
@@ -24,4 +25,3 @@ Report:
 - Follow-up fixes
 
 Do not edit files during the postmortem unless separately asked.
-

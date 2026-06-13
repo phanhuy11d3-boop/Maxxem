@@ -1,7 +1,8 @@
 ---
 name: add-source
 description: Add a new watched DEX pair (price-data source) to the CryptoSentinel watchlist following the full validation procedure — resolve the real pairAddress, verify liquidity and symbols against the live DEXScreener API, then pin it in config/dexscreener.yaml.
-argument-hint: "[chain] [pair or token, e.g. solana WIF/SOL]"
+arguments: [chain, pair]
+shell: powershell
 ---
 
 # Add Source — watched DEX pair procedure
@@ -44,7 +45,7 @@ global defaults: `thresholds_pct`, `min_volume_usd`, `min_liquidity_usd`.
 ## 3. Verify the scanner sees it
 
 ```powershell
-py -3 scripts/diagnose_dexscreener.py
+py -3 .claude/skills/dexscreener-watchlist/scripts/run_watchlist_diagnosis.py
 ```
 
 The new pair must appear with real numbers (not `[MISS]`). A symbol mismatch

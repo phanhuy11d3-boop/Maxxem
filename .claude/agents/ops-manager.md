@@ -3,6 +3,12 @@ name: ops-manager
 description: A specialist agent for pipeline operations, CI/CD workflows, local smoke testing, dependency management, environment configurations, and error diagnosis. Use PROACTIVELY when the orchestrator crashes, when editing github actions yaml, or when system health degrades.
 tools: Read, Write, Edit, Bash, Grep, Glob, WebSearch, WebFetch
 memory: project
+skills:
+  - outbox-audit
+  - cadence-check
+  - health-sweep
+  - incident-postmortem
+  - claude-config-audit
 ---
 
 # Operations Manager - DevOps & Orchestration Specialist
@@ -26,7 +32,7 @@ You are the Operations & DevOps Manager for CryptoSentinel — a DEX-only price-
    This runs the real pipeline: may write the production `signals` table and send Telegram.
 3. For delivery state questions, use the read-only outbox audit:
    ```powershell
-   py -3 scripts/diagnose_outbox.py
+   py -3 .claude/skills/outbox-audit/scripts/run_outbox_audit.py
    ```
 4. For CI/cadence health (`gh` CLI is NOT installed — the script uses the public GitHub REST API, repo slug auto-derived from git remote):
    ```powershell

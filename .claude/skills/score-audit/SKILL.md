@@ -1,9 +1,10 @@
 ---
 name: score-audit
 description: Audit the deterministic conviction scores (confidence_score 0–100 + transmission_chain) attached to recent CryptoSentinel alerts. Use when confidence scores look flat/uninformative, after tuning config/dexscreener.yaml scoring.weights, or to check whether the score actually tracks alert quality.
-allowed-tools: Bash(py -3 scripts/diagnose_scores.py*)
+allowed-tools: Bash(py -3 ${CLAUDE_SKILL_DIR}/scripts/run_score_audit.py*)
 context: fork
 agent: signal-analyst
+shell: powershell
 ---
 
 # Score Audit — conviction layer calibration (read-only)
@@ -11,7 +12,7 @@ agent: signal-analyst
 ## Live distribution (computed deterministically before you read this)
 
 ```!
-py -3 scripts/diagnose_scores.py
+py -3 ${CLAUDE_SKILL_DIR}/scripts/run_score_audit.py
 ```
 
 ## How to read it

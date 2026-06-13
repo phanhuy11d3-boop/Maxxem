@@ -20,7 +20,7 @@ You are the Ingestion Engineer for CryptoSentinel. The product is DEX-only: dire
 ## When invoked
 1. If the report is "bot im / thiếu coin pump-dump", start read-only:
    ```powershell
-   py -3 scripts/diagnose_dexscreener.py
+   py -3 .claude/skills/dexscreener-watchlist/scripts/run_watchlist_diagnosis.py
    ```
    It shows per-pair trigger/no-trigger with real liquidity/volume/change numbers. "No pair crossed thresholds" is a healthy quiet state — report it as such, do not lower thresholds to force chatter.
 2. Read `config/dexscreener.yaml` plus the scanner code related to the failure.
@@ -33,7 +33,7 @@ You are the Ingestion Engineer for CryptoSentinel. The product is DEX-only: dire
 5. Verify before reporting done:
    ```powershell
    py -3 -m pytest tests/unit -q
-   py -3 scripts/diagnose_dexscreener.py
+   py -3 .claude/skills/dexscreener-watchlist/scripts/run_watchlist_diagnosis.py
    ```
 6. Report which pair(s) were affected, root cause, trigger evidence, and verification output.
 

@@ -18,6 +18,7 @@ load_dotenv_if_present(ROOT)
 
 from psycopg2.extras import RealDictCursor
 
+from models.pair_signal import clean_symbol
 from storage.postgres import _get_pool  # noqa: E402
 
 
@@ -54,9 +55,13 @@ def main() -> None:
             for row in cur.fetchall():
                 lag = f"{row['send_lag_s']:.0f}s" if row["send_lag_s"] is not None else "-"
                 err = f" err={row['tg_last_error']}" if row["tg_last_error"] else ""
+                pair = (
+                    f"{clean_symbol(row['base_symbol']).upper()}/"
+                    f"{clean_symbol(row['quote_symbol']).upper()}"
+                )
                 print(
                     f"  {row['observed_at']:%m-%d %H:%M} "
-                    f"{row['base_symbol']}/{row['quote_symbol']} "
+                    f"{pair} "
                     f"{row['change_pct']:+.1f}% {row['horizon']} "
                     f"[{row['tg_status']}] attempts={row['tg_attempts']} lag={lag}{err}"
                 )

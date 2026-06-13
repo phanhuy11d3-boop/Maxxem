@@ -1,7 +1,8 @@
 ---
 name: source-integration-plan
 description: Plan a new market-data source integration safely, including shadow mode, health telemetry, license/quota review, and promotion criteria.
-argument-hint: "[source/provider]"
+arguments: [provider]
+context: fork
 agent: realtime-feed-researcher
 ---
 
@@ -17,4 +18,3 @@ Before adding a source, produce a plan with:
 6. Promotion criteria and rollback.
 
 Do not implement or enable the source until the operator approves the plan.
-

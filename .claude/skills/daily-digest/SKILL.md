@@ -2,7 +2,8 @@
 name: daily-digest
 description: Render and (optionally) send the CryptoSentinel 24h top-movers digest — a leaderboard of the biggest pair moves recorded in the signals table over the last day. Sending is LIVE-FIRE to Telegram. Use to preview the digest or trigger today's send manually.
 disable-model-invocation: true
-allowed-tools: Bash(py -3 scripts/daily_digest.py*)
+allowed-tools: Bash(py -3 ${CLAUDE_SKILL_DIR}/scripts/preview_digest.py*) Bash(py -3 scripts/daily_digest.py --live*) Bash(py -3 scripts/daily_digest.py --force*)
+shell: powershell
 ---
 
 # Daily Digest — 24h top-movers leaderboard
@@ -14,7 +15,7 @@ allowed-tools: Bash(py -3 scripts/daily_digest.py*)
 ## Preview (dry — does NOT send)
 
 ```!
-py -3 scripts/daily_digest.py
+py -3 ${CLAUDE_SKILL_DIR}/scripts/preview_digest.py
 ```
 
 ## How it works

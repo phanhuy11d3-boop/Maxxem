@@ -4,6 +4,7 @@ description: Check the REAL cadence of the two-shift CryptoSentinel production â
 allowed-tools: Bash(py -3 .claude/skills/cadence-check/scripts/*)
 context: fork
 agent: ops-manager
+shell: powershell
 ---
 
 # Cadence Check â€” two-shift coverage vs the 30-minute stale window

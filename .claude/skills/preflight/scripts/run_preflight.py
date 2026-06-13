@@ -25,6 +25,7 @@ CORE_COMPILE_FILES = [
 DRY_STAGES = [
     ("unit-tests", ["py", "-3", "-m", "pytest", "tests/unit", "-q"], True),
     ("compile-core", ["py", "-3", "-m", "py_compile", *CORE_COMPILE_FILES], True),
+    ("diagnose-claude-config", ["py", "-3", "scripts/diagnose_claude_config.py"], True),
     ("diagnose-dexscreener", ["py", "-3", "scripts/diagnose_dexscreener.py"], True),
 ]
 

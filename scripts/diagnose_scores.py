@@ -21,6 +21,7 @@ load_dotenv_if_present(ROOT)
 
 from psycopg2.extras import RealDictCursor
 
+from models.pair_signal import clean_symbol
 from storage.postgres import _get_pool  # noqa: E402
 
 WINDOW_HOURS = 72
@@ -118,9 +119,13 @@ def main() -> None:
             if rows:
                 print("\n-- 10 signal có điểm gần nhất --")
                 for r in rows:
+                    pair = (
+                        f"{clean_symbol(r['base_symbol']).upper()}/"
+                        f"{clean_symbol(r['quote_symbol']).upper()}"
+                    )
                     print(
                         f"  {r['observed_at']:%m-%d %H:%M} "
-                        f"{r['base_symbol']}/{r['quote_symbol']} "
+                        f"{pair} "
                         f"{r['change_pct']:+.1f}% {r['horizon']} "
                         f"score={r['confidence_score']} · {r['transmission_chain'] or '-'}"
                     )

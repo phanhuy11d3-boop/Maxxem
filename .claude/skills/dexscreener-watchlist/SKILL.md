@@ -1,7 +1,9 @@
 ---
 name: dexscreener-watchlist
 description: Add, remove, tune, or diagnose DEXScreener pair price-move alerts. Use when CryptoSentinel should post direct coin/pair pump-dump movement alerts, when alerts are too quiet/noisy, or when editing config/dexscreener.yaml.
-argument-hint: "[pair/query/threshold change]"
+arguments: [request]
+allowed-tools: Bash(py -3 ${CLAUDE_SKILL_DIR}/scripts/run_watchlist_diagnosis.py*)
+shell: powershell
 ---
 
 # DEXScreener Watchlist
@@ -22,7 +24,7 @@ touches anything in this path.
 
 1. Run the read-only diagnosis first:
    ```powershell
-   py -3 scripts/diagnose_dexscreener.py
+   py -3 ${CLAUDE_SKILL_DIR}/scripts/run_watchlist_diagnosis.py
    ```
 2. If adding a pair, follow the `add-source` skill (validate via live API, then
    pin). Every production entry must include `chainId`, `pairAddress`,
@@ -38,7 +40,7 @@ touches anything in this path.
 5. Verify:
    ```powershell
    py -3 -m pytest tests/unit -q
-   py -3 scripts/diagnose_dexscreener.py
+   py -3 ${CLAUDE_SKILL_DIR}/scripts/run_watchlist_diagnosis.py
    ```
 
 ## Guardrails

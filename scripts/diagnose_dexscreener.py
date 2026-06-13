@@ -13,7 +13,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from models.pair_signal import HORIZONS
+from models.pair_signal import HORIZONS, clean_symbol
 from scrapers.dexscreener import _entry_cfg, _num, _trigger, fetch_pair, load_config
 
 
@@ -58,8 +58,8 @@ def main() -> None:
         else:
             verdict = "no trigger"
         label = (
-            f"{(pair.get('baseToken') or {}).get('symbol')}/"
-            f"{(pair.get('quoteToken') or {}).get('symbol')}"
+            f"{clean_symbol((pair.get('baseToken') or {}).get('symbol')).upper()}/"
+            f"{clean_symbol((pair.get('quoteToken') or {}).get('symbol')).upper()}"
         )
         changes = " ".join(f"{h}={_num(price_change.get(h)):+.2f}%" for h in HORIZONS)
         vols = " ".join(f"{h}=${_num(volume.get(h)):,.0f}" for h in HORIZONS)

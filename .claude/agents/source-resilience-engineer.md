@@ -5,6 +5,7 @@ tools: Read, Write, Edit, Bash, Grep, Glob, WebSearch, WebFetch
 memory: project
 skills:
   - source-health-audit
+  - realtime-shadow
 ---
 
 # Source Resilience Engineer
@@ -31,11 +32,8 @@ DEX-only numeric price alerts: no news, no LLM commentary, no trading advice.
 ## First Commands
 
 ```powershell
-py -3 scripts/diagnose_sources.py
-py -3 scripts/diagnose_dexscreener.py
-py -3 scripts/diagnose_outbox.py
+py -3 .claude/skills/source-health-audit/scripts/run_source_health_audit.py
 ```
 
 Report source status by source and chain, last_seen age, consecutive errors, and
 whether quiet is trustworthy.
-
