@@ -28,6 +28,12 @@
 | `threshold-backtest` | stored-alert threshold pressure analysis |
 | `alert-rate-audit` | queue pressure and noisy pair/horizon audit |
 | `incident-postmortem` | structured incident review |
+| `dexscreener-watchlist` | add/remove/tune/diagnose pair price-move alerts |
+| `add-source` | validate and pin a new watched DEX pair |
+| `score-audit` | audit deterministic conviction scores (confidence_score + transmission_chain) |
+| `cadence-check` | two-shift production cadence vs 30-minute stale window |
+| `daily-digest` | render/send 24h top-movers digest (LIVE-FIRE send) |
+| `preflight` | dry smoke-test before commit; live pipeline needs `--live` |
 
 Read-only skills and agents must not write DB state or send Telegram. Operational
 skills own colocated scripts under their skill directory; SKILL.md should invoke
