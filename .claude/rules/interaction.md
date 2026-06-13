@@ -21,8 +21,8 @@ nếu file này mâu thuẫn với hiến pháp hiện tại.
 
 ## 3. Error Handling
 
-- Nếu bot "im", luôn chạy `py -3 scripts/diagnose_dexscreener.py` trước khi
-  chỉnh threshold. "Không pair nào vượt ngưỡng" là trạng thái lành mạnh.
+- Nếu bot "im" hoặc ít tin, luôn dùng skill `/health-sweep` — không chạy
+  script đơn lẻ thay thế. "Không pair nào vượt ngưỡng" là trạng thái lành mạnh.
 - Nếu pipeline lỗi hệ thống, Ops Manager kiểm tra env, DB, scheduler/cadence,
   rồi mới kết luận lỗi sản phẩm. Outbox xem bằng `scripts/diagnose_outbox.py`.
 - Live commands có thể gửi Telegram hoặc ghi production DB (`py -3 main.py`,

@@ -23,10 +23,10 @@ old `articles` table remains in the DB as frozen history only.
 2. **Pinned pairs only in production**: every production watchlist entry must
    include `chainId`, `pairAddress`, `baseSymbol`, and `quoteSymbol`. Search
    resolution is allowed only in diagnosis/discovery.
-3. **No silent quiet**: if alerts are low, first prove whether no watched pair
-   crossed thresholds or the scanner is broken:
-   `py -3 scripts/diagnose_dexscreener.py`. Quiet with a healthy scanner is a
-   valid, healthy state.
+3. **No silent quiet**: if alerts are low, invoke the `/health-sweep` skill —
+   it fans out scanner, rules, DB, and delivery in parallel and cross-correlates
+   all stages. Do not run a single diagnostic script in place of the skill.
+   Quiet with a healthy scanner is a valid, healthy state.
 4. **No hallucinated metrics**: every number in an alert comes from the
    DEXScreener API response. Nothing is estimated, labeled, or narrated.
 5. **Live output is explicit**: `py -3 main.py`, `py -3 utils/notifier.py

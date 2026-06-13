@@ -27,15 +27,15 @@ py -3 scripts/diagnose_outbox.py    # are signals reaching sent? failed/expired?
 ```
 To preview formatting WITHOUT sending:
 ```powershell
-py -3 utils/notifier.py             # dry: prints the rendered message
-py -3 models/pair_signal.py              # smoke render from the model itself
+py -3 utils/notifier.py             # dry: prints the rendered message to stdout (no Telegram)
+py -3 models/pair_signal.py         # renders a sample WIF alert to stdout — no DB, no Telegram
 ```
 LIVE-FIRE test (`py -3 utils/notifier.py --live` — sends a REAL Telegram message to CHAT_ID) belongs to the main session with explicit operator intent; report the need rather than running it yourself.
 
 ## Core Responsibilities
 1. **Price-Board Formatting**: the first line must carry the hook (🚀/🩸 pair %, horizon). Every number is rendered from `PairSignal` structured fields — no regex re-parsing of text.
 2. **Channel Routing**: main channel (`CHAT_ID`) gets every signal; premium (`PREMIUM_CHAT_ID`) only `is_hot` moves; heartbeat/admin only to ops channels.
-3. **Outbox Retrying**: dispatch consumes the Postgres queue via claim → send → `mark_tg_attempt`; max 3 attempts inside the 30-minute freshness window.
+3. **Outbox Retrying**: the dispatch loop lives in `main.py._dispatch_tg_queue()` (ops-manager scope): it calls `claim_tg_send_slot` → `send_signal` (your layer) → `mark_tg_attempt`; max 3 attempts inside the 30-minute freshness window. Your module (`utils/notifier.py`) owns only the Telegram HTTP call (`send_signal`). If dispatch logic is broken, look in `main.py` first.
 4. **Rate Limit Handling**: in-process retry on Telegram 429 honoring `retry_after`, capped so the 1-minute cadence never hangs.
 
 ## Engineering Guardrails & Rules

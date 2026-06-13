@@ -2,16 +2,16 @@ enabled: true
 cooldown_minutes: 15
 min_liquidity_usd: 50000
 min_volume_usd:
-  m5: 5000
-  h1: 10000
-  h6: 50000
-  h24: 100000
+  m5: 500
+  h1: 2000
+  h6: 15000
+  h24: 50000
 thresholds_pct:
-  m5: 2.0
-  h1: 4.0
-  h6: 8.0
-  # 12 -> 8: move 8%/ngay voi mid-cap la dang dua tin (JUP +8.3% 2026-06-12 truot oan)
-  h24: 8.0
+  m5: 0.8
+  h1: 1.5
+  h6: 3.0
+  # 8 -> 4: flat market, JUP +5% h24 khong trigger — ha de co tin
+  h24: 4.0
 watchlist:
   # query chỉ dùng cho diagnose/khám phá; production luôn fetch theo pairAddress.
   # Majors (SOL/WETH/WBTC) có per-pair thresholds_pct thấp hơn global:
@@ -60,7 +60,6 @@ watchlist:
     pairAddress: "0x56534741CD8B152df6d48AdF7ac51f75169A83b2"
     baseSymbol: "WBTC"
     quoteSymbol: "USDT"
-    thresholds_pct: { m5: 0.8, h1: 1.5, h6: 3.0, h24: 4.0 }
   - name: "PEPE/WETH"
     query: "PEPE/WETH"
     chainId: "ethereum"
@@ -88,3 +87,30 @@ watchlist:
     pairAddress: "FAqh648xeeaTqL7du49sztp9nfj5PjRQrfvaMccyd9cz"
     baseSymbol: "PENGU"
     quoteSymbol: "SOL"
+  - name: "DOGE/WETH"
+    query: "DOGE/WETH"
+    chainId: "ethereum"
+    pairAddress: "0xc0067d751FB1172DBAb1FA003eFe214EE8f419b6"
+    baseSymbol: "DOGE"
+    quoteSymbol: "WETH"
+    thresholds_pct: { m5: 1.0, h1: 2.0, h6: 3.5, h24: 5.0 }
+  - name: "SHIB/WETH"
+    query: "SHIB/WETH"
+    chainId: "ethereum"
+    pairAddress: "0xCF6dAAB95c476106ECa715D48DE4b13287ffDEAa"
+    baseSymbol: "SHIB"
+    quoteSymbol: "WETH"
+    thresholds_pct: { m5: 1.0, h1: 2.0, h6: 3.5, h24: 5.0 }
+  - name: "LINK/WETH"
+    query: "LINK/WETH"
+    chainId: "ethereum"
+    pairAddress: "0xa6Cc3C2531FdaA6Ae1A3CA84c2855806728693e8"
+    baseSymbol: "LINK"
+    quoteSymbol: "WETH"
+    thresholds_pct: { m5: 1.0, h1: 2.0, h6: 3.5, h24: 5.0 }
+  - name: "WAVAX/USDC"
+    query: "WAVAX/USDC"
+    chainId: "avalanche"
+    pairAddress: "0x8aC5707f8D4BDe1d771d34c7AfD81c3922b73379"
+    baseSymbol: "WAVAX"
+    quoteSymbol: "USDC"
