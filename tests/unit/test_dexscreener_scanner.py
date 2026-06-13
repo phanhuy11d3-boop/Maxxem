@@ -118,6 +118,30 @@ def test_build_signal_flags_low_liquidity():
     assert sig.low_liquidity is True
 
 
+def test_build_signal_attaches_conviction():
+    sig = build_signal(_pair(), "h1", 12.4, CFG)
+    assert sig.confidence_score is not None
+    assert 0 <= sig.confidence_score <= 100
+    assert sig.transmission_chain  # non-empty với volume + txn + đa khung
+
+
+def test_scoring_disabled_leaves_fields_none():
+    cfg = {**CFG, "scoring": {"enabled": False}}
+    sig = build_signal(_pair(), "h1", 12.4, cfg)
+    assert sig.confidence_score is None
+    assert sig.transmission_chain is None
+
+
+def test_score_does_not_affect_trigger():
+    # Cùng pair: bật/tắt scoring không đổi khung kích hoạt hay dedup_key.
+    on = build_signal(_pair(), "h1", 12.4, {**CFG, "scoring": {"enabled": True}},
+                      now=datetime(2026, 6, 12, 10, 7, tzinfo=timezone.utc))
+    off = build_signal(_pair(), "h1", 12.4, {**CFG, "scoring": {"enabled": False}},
+                       now=datetime(2026, 6, 12, 10, 7, tzinfo=timezone.utc))
+    assert on.id == off.id
+    assert on.horizon == off.horizon == "h1"
+
+
 def test_symbol_mismatch_guard():
     entry = {"baseSymbol": "WIF", "quoteSymbol": "SOL"}
     assert _symbol_matches(_pair(), entry) is True

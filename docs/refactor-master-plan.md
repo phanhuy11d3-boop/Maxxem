@@ -105,6 +105,10 @@ ngày khi thị trường đi ngang là hành vi ĐÚNG.
 | R10 | Tàn dư context cũ lái AI/agent sai hướng | SOP drift về news-first | Xóa code + config + memory cũ; CLAUDE.md ghi rõ pivot; banned-words test | Memory mới phải ghi ngày + bối cảnh |
 | R11 | Secret lộ trong docs/log | Sự cố bảo mật | Placeholder-only; agent chỉ thấy 4 ký tự cuối; rules/interaction.md | Giữ thói quen khi viết doc mới |
 | R12 | Format HTML vỡ vì ký tự lạ trong symbol | Telegram reject message | `html.escape` mọi field text; test format | Symbol unicode bất thường của meme coin mới |
+| R13 | Conviction score miscalibrated (mọi alert ~50) | Score vô dụng, không giúp lọc | Score deterministic + `diagnose_scores.py`/`/score-audit` theo dõi phân bố; tune `scoring.weights` không đụng threshold | Cân weights theo dữ liệu thật sau 1 tuần chạy |
+| R14 | Score bị hiểu nhầm thành gate → chặn move thật | Vi phạm doctrine "thà noise còn hơn miss" | Score KHÔNG nằm trong `_trigger`; chỉ display + premium augment; test `test_score_does_not_affect_trigger` | Mọi đề xuất "lọc theo score" phải bị từ chối |
+| R15 | Daily digest gửi trùng trong ngày | Kênh trông cẩu thả | Idempotent theo ngày UTC qua `digest_state.json`, chỉ ghi dấu sau khi gửi thành công; digest ngoài outbox | Nếu scheduler chạy nhiều máy, cân nhắc khóa tập trung |
+| R16 | Row DB cũ (trước migration) thiếu cột score | Render/parse vỡ | Cột Optional default None; render bỏ dòng khi None; `_row_to_signal` đọc NULL-safe; test `test_format_no_conviction_line_when_score_none` | — |
 
 ## 4. Chiến lược chuẩn production-crypto (lộ trình sau big-bang)
 
@@ -116,14 +120,28 @@ ngày khi thị trường đi ngang là hành vi ĐÚNG.
    meme (WIF/BONK/PEPE) giữ hoặc nâng — bằng per-pair override, có bằng chứng.
 3. Xác nhận handover GH Actions ↔ local không còn dead-air gap > 30 phút.
 
-### Giai đoạn B — Chất lượng tín hiệu
+### Giai đoạn B — Chất lượng tín hiệu — ĐÃ THỰC THI (2026-06-13, "Conviction Layer")
 
-1. **Severity score** thay `is_hot` nhị phân: điểm từ move% × volume ×
-   liquidity tier × txns imbalance → route kênh + emoji mức độ.
-2. **Daily digest** 1 tin/ngày: top movers 24h của watchlist (giữ kênh sống
-   khi thị trường đi ngang mà không spam).
-3. **Buy/sell imbalance highlight**: 80/20 buys đáng chú ý hơn 50/50 —
-   thêm 1 dòng khi lệch mạnh.
+1. **Conviction score** (`models/scoring.py`): `confidence_score` 0–100 từ 5
+   sub-score deterministic (magnitude × volume × pressure × alignment ×
+   liquidity), trọng số cấu hình ở `scoring.weights`. KHÔNG thay `is_hot` —
+   *augment* routing premium (`is_hot` OR `score ≥ premium_min_score`). Theo
+   doctrine "thà noise còn hơn miss": score CHỈ hiển thị + lưu + route, KHÔNG
+   BAO GIỜ chặn kênh chính. Cột `confidence_score`/`transmission_chain` thêm
+   additive vào `signals`.
+2. **Daily digest** (`scripts/daily_digest.py` + `utils.notifier.render_digest_html`):
+   leaderboard top movers 24h, idempotent 1 tin/ngày UTC qua
+   `storage/digest_state.json`, KHÔNG đi qua outbox. Skill `/daily-digest`
+   (live-fire) để preview/trigger tay.
+3. **Buy/sell imbalance highlight**: gộp vào `transmission_chain` (vd
+   `71% buys`) thay vì 1 dòng riêng — bằng chứng áp lực nằm ngay dòng conviction.
+4. **Score audit** (`scripts/diagnose_scores.py` + skill `/score-audit`): theo
+   dõi phân bố điểm để bắt lệch hiệu chỉnh; signal-analyst sở hữu việc cân
+   `scoring.weights`.
+
+> Nguồn cảm hứng: pattern *confidence score* + *transmission chain* của
+> roman-rr/trading-signals, *leaderboard* của binance market-rank — đều được
+> tái hiện DETERMINISTIC (không LLM, không consensus model) để giữ hiến pháp.
 
 ### Giai đoạn C — Mở rộng nguồn (vẫn DEX-only)
 

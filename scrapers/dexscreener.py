@@ -1,34 +1,50 @@
-"""DEXScreener price-movement scanner — sản phẩm lõi của CryptoSentinel.
+"""DEXScreener price-movement scanner.
 
-Quét watchlist pair đã pin (chainId + pairAddress), so với ngưỡng %/volume/
-liquidity, và emit PairSignal hoàn toàn deterministic. Không LLM, không news.
-
-Tối ưu: pair pin được fetch BATCH theo chain (API cho phép tới 30 address
-mỗi request) — watchlist 8 pair trên 2 chain = 2 HTTP call thay vì 8.
+This module is the compatibility facade for the production scanner. The actual
+source fetch/normalization lives in ``sources/`` and deterministic trigger logic
+lives in ``signals/``. Keeping this facade stable lets diagnostics and tests keep
+using the older function names while the internals become source-agnostic.
 """
 
 from __future__ import annotations
 
 import logging
-import math
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-import requests
 import yaml
 
-from models.pair_signal import HORIZONS, PairSignal
+from models.pair_signal import PairSignal
+from signals.cooldown import bucket as _cooldown_bucket
+from signals.engine import (
+    LOW_LIQUIDITY_FLAG_USD,
+    TriggerDecision,
+    build_signal_from_snapshot,
+    entry_config,
+    evaluate_snapshot,
+)
+from sources.dexscreener_rest import (
+    BASE_URL,
+    BATCH_MAX_ADDRESSES,
+    HTTP_TIMEOUT_S,
+    DexScreenerRestSource,
+    get_json,
+)
+from sources.normalize import (
+    base_symbol as _base_symbol_from_pair,
+    normalize_dexscreener_pair,
+    norm_symbol as _normalize_symbol,
+    num as _normalize_num,
+    quote_symbol as _quote_symbol_from_pair,
+    snapshot_key,
+    symbol_matches as _snapshot_symbol_matches,
+)
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = "https://api.dexscreener.com"
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "dexscreener.yaml"
-HTTP_TIMEOUT_S = 10
-BATCH_MAX_ADDRESSES = 30  # giới hạn API /latest/dex/pairs
-
-# Dưới mức này alert vẫn gửi (nếu qua min_liquidity_usd) nhưng gắn cờ DYOR
-LOW_LIQUIDITY_FLAG_USD = 100_000
+_REST_SOURCE = DexScreenerRestSource()
 
 
 def load_config(path: str | Path = CONFIG_PATH) -> dict:
@@ -51,202 +67,101 @@ def load_config(path: str | Path = CONFIG_PATH) -> dict:
 
 
 def _get_json(path: str, params: Optional[dict] = None) -> Any:
-    resp = requests.get(f"{BASE_URL}{path}", params=params or {}, timeout=HTTP_TIMEOUT_S)
-    resp.raise_for_status()
-    return resp.json()
+    return get_json(path, params=params)
 
 
 def _num(value: Any, default: float = 0.0) -> float:
-    try:
-        if value is None:
-            return default
-        out = float(value)
-        return out if math.isfinite(out) else default
-    except (TypeError, ValueError):
-        return default
+    return _normalize_num(value, default=default)
 
 
 def _base_symbol(pair: dict) -> str:
-    return str((pair.get("baseToken") or {}).get("symbol") or "").upper()
+    return _base_symbol_from_pair(pair)
 
 
 def _quote_symbol(pair: dict) -> str:
-    return str((pair.get("quoteToken") or {}).get("symbol") or "").upper()
+    return _quote_symbol_from_pair(pair)
 
 
 def _norm_symbol(raw: str) -> str:
-    """Chuẩn hóa symbol để so khớp: API có thể trả 'Fartcoin ' (space thừa), '$WIF'."""
-    return str(raw or "").upper().strip().lstrip("$").strip()
+    return _normalize_symbol(raw)
 
 
 def _symbol_matches(pair: dict, entry: dict) -> bool:
-    """Chốt chặn nhầm token: symbol thực tế phải khớp symbol khai báo."""
-    expected_base = _norm_symbol(entry.get("baseSymbol"))
-    expected_quote = _norm_symbol(entry.get("quoteSymbol"))
-    if expected_base and _norm_symbol(_base_symbol(pair)) != expected_base:
-        return False
-    if expected_quote and _norm_symbol(_quote_symbol(pair)) != expected_quote:
-        return False
-    return True
+    return _snapshot_symbol_matches(pair, entry)
 
 
 def _best_pair(candidates: list[dict], entry: dict) -> Optional[dict]:
-    chain_id = entry.get("chainId")
-    if chain_id:
-        candidates = [p for p in candidates if str(p.get("chainId", "")).lower() == chain_id.lower()]
-    candidates = [p for p in candidates if _symbol_matches(p, entry)]
-    if not candidates:
-        return None
-    return max(candidates, key=lambda p: _num((p.get("liquidity") or {}).get("usd")))
+    return _REST_SOURCE._best_pair(candidates, entry)
 
 
 def fetch_pair(entry: dict) -> Optional[dict]:
-    """Fetch MỘT pair (dùng cho diagnose). Production dùng fetch_pairs_batch."""
-    chain_id = entry.get("chainId")
-    pair_address = entry.get("pairAddress")
-    if chain_id and pair_address:
-        data = _get_json(f"/latest/dex/pairs/{chain_id}/{pair_address}")
-        pairs = data.get("pairs") or []
-        if not pairs:
-            return None
-        pair = pairs[0]
-        return pair if _symbol_matches(pair, entry) else None
-
-    # Search-only: CHỈ cho diagnosis/khám phá — production phải pin pairAddress.
-    query = entry.get("query") or entry.get("name")
-    if not query:
-        return None
-    data = _get_json("/latest/dex/search", {"q": query})
-    return _best_pair(data.get("pairs") or [], entry)
+    """Fetch one pair. Production scanning uses ``fetch_pairs_batch``."""
+    return _REST_SOURCE.fetch_pair(entry)
 
 
 def fetch_pairs_batch(watchlist: list[dict]) -> tuple[dict[str, dict], int]:
-    """
-    Fetch mọi pair pin theo batch: gom pairAddress theo chain, mỗi chain
-    1 request (tối đa 30 address). Trả (map "chain:address(lower)" -> pair dict,
-    số request API fail). api_errors > 0 = thiếu dữ liệu vì API, KHÔNG phải
-    thị trường im — caller phải phân biệt hai trạng thái này.
-    Entry search-only bị bỏ qua (production-only path).
-    """
-    by_chain: dict[str, list[str]] = {}
-    for entry in watchlist:
-        chain = entry.get("chainId")
-        addr = entry.get("pairAddress")
-        if chain and addr:
-            by_chain.setdefault(chain.lower(), []).append(addr)
-
-    found: dict[str, dict] = {}
-    api_errors = 0
-    for chain, addresses in by_chain.items():
-        for i in range(0, len(addresses), BATCH_MAX_ADDRESSES):
-            chunk = addresses[i:i + BATCH_MAX_ADDRESSES]
-            try:
-                data = _get_json(f"/latest/dex/pairs/{chain}/{','.join(chunk)}")
-            except Exception as exc:
-                api_errors += 1
-                logger.warning("DEXScreener batch fetch failed (%s): %s", chain, exc)
-                continue
-            for pair in data.get("pairs") or []:
-                key = f"{str(pair.get('chainId', '')).lower()}:{str(pair.get('pairAddress', '')).lower()}"
-                found[key] = pair
-    return found, api_errors
+    """Fetch pinned pairs in batches per chain and return raw DEXScreener pairs."""
+    raw_pairs, api_errors, _health = _REST_SOURCE.fetch_raw_pairs_batch(watchlist)
+    return raw_pairs, api_errors
 
 
 def _entry_cfg(entry: dict, cfg: dict) -> dict:
-    """Ngưỡng hiệu lực cho một entry: global, override được per-pair."""
-    return {
-        "min_liquidity_usd": entry.get("min_liquidity_usd", cfg.get("min_liquidity_usd")),
-        "min_volume_usd": {**(cfg.get("min_volume_usd") or {}), **(entry.get("min_volume_usd") or {})},
-        "thresholds_pct": {**(cfg.get("thresholds_pct") or {}), **(entry.get("thresholds_pct") or {})},
-    }
+    return entry_config(entry, cfg)
 
 
 def _trigger(pair: dict, cfg: dict) -> Optional[tuple[str, float]]:
-    """Khung mạnh nhất vượt ngưỡng (qua gate liquidity + volume), hoặc None."""
-    liquidity = _num((pair.get("liquidity") or {}).get("usd"))
-    if liquidity < _num(cfg.get("min_liquidity_usd"), 0):
+    decision = evaluate_snapshot(normalize_dexscreener_pair(pair), cfg)
+    if not decision:
         return None
-
-    thresholds = cfg.get("thresholds_pct") or {}
-    min_volume = cfg.get("min_volume_usd") or {}
-    price_change = pair.get("priceChange") or {}
-    volume = pair.get("volume") or {}
-
-    hits: list[tuple[str, float]] = []
-    for horizon in HORIZONS:
-        change = _num(price_change.get(horizon))
-        threshold = _num(thresholds.get(horizon), 0)
-        if threshold <= 0 or abs(change) < threshold:
-            continue
-        if _num(volume.get(horizon)) < _num(min_volume.get(horizon), 0):
-            continue
-        hits.append((horizon, change))
-    if not hits:
-        return None
-    return max(hits, key=lambda item: abs(item[1]))
-
-
-# Cooldown sàn theo khung: move h24 còn vượt ngưỡng suốt ngày không được
-# re-alert mỗi 15 phút — chỉ nhắc lại khi sang bucket khung mới hoặc đảo chiều
-# (direction nằm trong dedup_key nên flip luôn alert được ngay).
-_HORIZON_COOLDOWN_MIN = {"m5": 5, "h1": 60, "h6": 360, "h24": 1440}
+    return decision.horizon, decision.change_pct
 
 
 def _bucket(now: datetime, cooldown_minutes: int) -> str:
-    """Floor timestamp theo bucket size (epoch-aligned, hoạt động với mọi cỡ phút)."""
-    cooldown = max(1, int(cooldown_minutes))
-    floored = int(now.timestamp()) // (cooldown * 60) * (cooldown * 60)
-    return datetime.fromtimestamp(floored, tz=timezone.utc).strftime("%Y%m%d%H%M")
+    return _cooldown_bucket(now, cooldown_minutes)
 
 
-def build_signal(pair: dict, horizon: str, change_pct: float, cfg: dict,
-                 now: Optional[datetime] = None) -> PairSignal:
-    now = now or datetime.now(timezone.utc)
-    price_change = pair.get("priceChange") or {}
-    txns = (pair.get("txns") or {}).get(horizon) or {}
-    chain = str(pair.get("chainId") or "")
-    address = str(pair.get("pairAddress") or "")
-    direction = "UP" if change_pct > 0 else "DOWN"
-    cooldown = max(int(cfg.get("cooldown_minutes", 15)), _HORIZON_COOLDOWN_MIN.get(horizon, 15))
-    bucket = _bucket(now, cooldown)
-    liquidity = _num((pair.get("liquidity") or {}).get("usd"))
-
-    return PairSignal(
-        chain_id=chain,
-        dex_id=str(pair.get("dexId") or ""),
-        pair_address=address,
-        base_symbol=_base_symbol(pair) or "TOKEN",
-        quote_symbol=_quote_symbol(pair) or "QUOTE",
-        base_address=str((pair.get("baseToken") or {}).get("address") or "") or None,
-        url=pair.get("url") or f"https://dexscreener.com/{chain}/{address}",
-        horizon=horizon,
-        change_pct=change_pct,
-        price_usd=_num(pair.get("priceUsd")),
-        volume_usd=_num((pair.get("volume") or {}).get(horizon)),
-        liquidity_usd=liquidity,
-        buys=int(_num(txns.get("buys"))),
-        sells=int(_num(txns.get("sells"))),
-        changes={h: _num(price_change.get(h)) for h in HORIZONS if price_change.get(h) is not None},
-        fdv=_num(pair.get("fdv")) or None,
-        market_cap=_num(pair.get("marketCap")) or None,
-        observed_at=now,
-        dedup_key=f"dex:{chain}:{address}:{horizon}:{direction}:{bucket}",
-        low_liquidity=liquidity < LOW_LIQUIDITY_FLAG_USD,
+def build_signal(
+    pair: dict,
+    horizon: str,
+    change_pct: float,
+    cfg: dict,
+    now: Optional[datetime] = None,
+) -> PairSignal:
+    return build_signal_from_snapshot(
+        normalize_dexscreener_pair(pair),
+        TriggerDecision(horizon=horizon, change_pct=change_pct),
+        cfg,
+        now=now,
     )
 
 
-def scan_watchlist(config_path: str | Path = CONFIG_PATH) -> tuple[list[PairSignal], int]:
-    """
-    Quét toàn bộ watchlist. Trả (danh sách PairSignal vượt ngưỡng, api_errors).
-    API fail từng phần → bỏ qua phần đó, không sập pipeline, NHƯNG phải đếm
-    api_errors để heartbeat phân biệt "thị trường im" với "API sập".
-    """
+def _record_source_health_safely(health_updates: list) -> None:
+    """Best-effort health persistence; scanner output must not depend on DB writes."""
+    if not health_updates:
+        return
+    try:
+        from storage.postgres import record_source_health
+
+        for health in health_updates:
+            record_source_health(health)
+    except Exception as exc:
+        logger.debug("Source health update skipped: %s", exc)
+
+
+def scan_watchlist(
+    config_path: str | Path = CONFIG_PATH,
+    *,
+    record_health: bool = False,
+) -> tuple[list[PairSignal], int]:
+    """Scan the full watchlist and return ``(signals, api_errors)``."""
     cfg = load_config(config_path)
     if not cfg.get("enabled", True):
         return [], 0
 
     watchlist = cfg.get("watchlist") or []
-    pairs_map, api_errors = fetch_pairs_batch(watchlist)
+    snapshots, api_errors, health = _REST_SOURCE.fetch_snapshots(watchlist)
+    if record_health:
+        _record_source_health_safely(health)
 
     signals: list[PairSignal] = []
     for entry in watchlist:
@@ -254,29 +169,37 @@ def scan_watchlist(config_path: str | Path = CONFIG_PATH) -> tuple[list[PairSign
         try:
             chain = str(entry.get("chainId") or "").lower()
             addr = str(entry.get("pairAddress") or "").lower()
-            pair = pairs_map.get(f"{chain}:{addr}")
-            if pair is None and not addr:
-                logger.warning("DEXScreener: entry %s chưa pin pairAddress — bỏ qua (production cần pin).", name)
+            snapshot = snapshots.get(snapshot_key(chain, addr))
+            raw_pair = dict(snapshot.raw) if snapshot else None
+            if raw_pair is None and not addr:
+                logger.warning(
+                    "DEXScreener: entry %s is search-only; skipping production path.",
+                    name,
+                )
                 continue
-            if pair is None:
-                logger.warning("DEXScreener: không có dữ liệu pair cho %s", name)
+            if raw_pair is None:
+                logger.warning("DEXScreener: no pair data for %s", name)
                 continue
-            if not _symbol_matches(pair, entry):
-                logger.error("DEXScreener: SYMBOL MISMATCH %s — API trả %s/%s, config khai %s/%s. Bỏ qua.",
-                             name, _base_symbol(pair), _quote_symbol(pair),
-                             entry.get("baseSymbol"), entry.get("quoteSymbol"))
+            if not _symbol_matches(raw_pair, entry):
+                logger.error(
+                    "DEXScreener: SYMBOL MISMATCH %s - API returned %s/%s, config says %s/%s. Skipping.",
+                    name,
+                    _base_symbol(raw_pair),
+                    _quote_symbol(raw_pair),
+                    entry.get("baseSymbol"),
+                    entry.get("quoteSymbol"),
+                )
                 continue
 
             eff = _entry_cfg(entry, cfg)
-            hit = _trigger(pair, eff)
-            if not hit:
+            decision = evaluate_snapshot(snapshot, eff)
+            if not decision:
                 continue
-            horizon, change = hit
-            signals.append(build_signal(pair, horizon, change, cfg))
+            signals.append(build_signal_from_snapshot(snapshot, decision, {**cfg, **eff}))
         except Exception as exc:
             logger.warning("DEXScreener scan skipped for %s: %s", name, exc)
     logger.info("DEXScreener signals: %s (api_errors=%s)", len(signals), api_errors)
     return signals, api_errors
 
 
-# Smoke test scanner: py -3 scripts/diagnose_dexscreener.py (read-only, đầy đủ hơn)
+# Smoke test scanner: py -3 scripts/diagnose_dexscreener.py (read-only).

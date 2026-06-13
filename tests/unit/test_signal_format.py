@@ -61,6 +61,35 @@ def test_format_has_zero_news_or_ai_remnants():
         assert banned not in text
 
 
+def test_format_renders_conviction_line():
+    text = _signal(
+        confidence_score=87,
+        transmission_chain="vol 3.2× gate · 71% buys · m5+h1 aligned",
+    ).format_telegram_html()
+    assert "🎯 <b>87</b>/100 · vol 3.2× gate · 71% buys · m5+h1 aligned" in text
+
+
+def test_format_no_conviction_line_when_score_none():
+    # Row DB cũ (NULL) hoặc scoring tắt -> không dòng conviction, không vỡ render.
+    text = _signal().format_telegram_html()
+    assert "🎯" not in text and "/100" not in text
+
+
+def test_format_conviction_score_without_chain():
+    text = _signal(confidence_score=40, transmission_chain="").format_telegram_html()
+    assert "🎯 <b>40</b>/100" in text
+    assert "/100 ·" not in text          # chuỗi rỗng -> không có ' · ' đuôi
+
+
+def test_format_conviction_has_no_banned_words():
+    text = _signal(
+        confidence_score=92,
+        transmission_chain="vol 5.0× gate · 80% sells · h1+h6+h24 aligned",
+    ).format_telegram_html().lower()
+    for banned in ("bullish", "bearish", "sentiment", "ai-generated", "key takeaway", "breaking"):
+        assert banned not in text
+
+
 def test_format_dump_uses_blood_and_hot_flag():
     text = _signal(change_pct=-9.3, dedup_key="dex:x:y:h1:DOWN:1").format_telegram_html()
     assert text.startswith("🩸🩸 <b>$WIF -9.3%</b> · 1h")

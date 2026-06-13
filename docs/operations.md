@@ -18,8 +18,11 @@ niềm tin nhanh hơn mười alert đúng xây được.
   `0`/không set = tắt hoàn toàn.
 - `ADMIN_CHAT_ID`, `HEARTBEAT_CHAT_ID` — chỉ dùng khi telemetry bật; **không
   bao giờ** trùng `CHAT_ID` (guard trong code).
-- `PREMIUM_CHAT_ID` — optional; chỉ nhận move nóng (`is_hot`: m5 ≥8% hoặc bất
-  kỳ khung ≥15%).
+- `PREMIUM_CHAT_ID` — optional; nhận move nóng (`is_hot`: m5 ≥8% hoặc bất kỳ
+  khung ≥15%) HOẶC confidence ≥ `scoring.premium_min_score` (config). Kênh
+  chính luôn nhận mọi alert.
+- `DIGEST_CHAT_ID` — optional; nơi gửi daily top-movers digest (fallback
+  `CHAT_ID`).
 
 ---
 
@@ -59,6 +62,10 @@ Live = chạy thật `py -3 main.py`: ghi bảng `signals`, có thể gửi Tele
 3. Skill `cadence-check` — coverage 2 ca so với cửa sổ 30 phút.
 4. Skill `health-sweep` — fan-out 4 agent khi chưa khoanh được vùng.
 
+> Lưu ý: confidence score KHÔNG liên quan đến bot "im". Score thấp không chặn
+> gửi (doctrine "thà noise còn hơn miss"). Bot im = không pair vượt ngưỡng,
+> chẩn đoán bằng các bước trên, KHÔNG phải bằng score.
+
 Console Windows: prefix `PYTHONIOENCODING=utf-8` nếu script crash vì unicode.
 
 ---
@@ -71,6 +78,7 @@ Console Windows: prefix `PYTHONIOENCODING=utf-8` nếu script crash vì unicode.
 | `expired` 24h | `diagnose_outbox.py` | = 0 |
 | Coverage 24h | `cadence-check` | ≥ 95%, dead-air gap < 30 phút |
 | Alert/ngày/pair | bảng `signals` | đủ thưa để mỗi alert đáng đọc — tune bằng signal-analyst |
+| Phân bố confidence | `diagnose_scores.py` / `/score-audit` | spread, không dồn quanh 50 (lệch = cân lại `scoring.weights`) |
 
 ---
 
@@ -82,3 +90,5 @@ Console Windows: prefix `PYTHONIOENCODING=utf-8` nếu script crash vì unicode.
 | Alert giá lệch xa chart | pair address sai hoặc pool đã cạn | re-validate bằng `validate_pair.py`, pin lại address |
 | Spam cùng pair liên tục | cooldown quá ngắn / threshold quá thấp | signal-analyst tune per-pair override |
 | GH Actions không chạy đêm | hết ca mà không tự dispatch (thiếu `WORKFLOW_PAT`) | dispatch tay 1 run, kiểm tra secret |
+| Digest gửi 2 lần/ngày | `digest_state.json` bị xóa / chạy `--force` / 2 máy cùng chạy | kiểm tra marker; chỉ scheduler 1 nơi gọi `--live`; không dùng `--force` trừ khi cố ý |
+| Mọi alert score ~50 | `scoring.weights` chưa phân biệt | `/score-audit` xem phân bố, cân lại weights (KHÔNG đụng thresholds) |

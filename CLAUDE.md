@@ -65,12 +65,15 @@ out the mismatch. Do not silently follow the older layer.
 |---|---|
 | Orchestrator (1 vòng pipeline) | `main.py` |
 | Data contract + Telegram render | `models/pair_signal.py` (`PairSignal`) |
+| Conviction layer (score + chain) | `models/scoring.py` (deterministic, no LLM) |
 | DEX scanner (batch fetch + rules) | `scrapers/dexscreener.py` |
-| Watchlist/thresholds | `config/dexscreener.yaml` |
+| Watchlist/thresholds/scoring weights | `config/dexscreener.yaml` |
 | Storage + outbox | `storage/postgres.py` (bảng `signals`) |
-| Telegram delivery + heartbeat | `utils/notifier.py` |
+| Telegram delivery + heartbeat + digest render | `utils/notifier.py` |
 | Scanner diagnosis (read-only) | `scripts/diagnose_dexscreener.py` |
 | Outbox diagnosis (read-only) | `scripts/diagnose_outbox.py` |
+| Score diagnosis (read-only) | `scripts/diagnose_scores.py` |
+| Daily top-movers digest (live-fire send) | `scripts/daily_digest.py` |
 | Day shift scheduler | `scripts/run_local_pipeline.ps1` + `.vbs` (Task Scheduler) |
 | Night shift scheduler | `.github/workflows/scraper.yml` (GH Actions shift loop) |
 
@@ -79,9 +82,11 @@ out the mismatch. Do not silently follow the older layer.
 | Purpose | Command |
 |---|---|
 | Unit tests | `py -3 -m pytest tests/unit -q` |
-| Compile core files | `py -3 -m py_compile main.py models/pair_signal.py storage/postgres.py scrapers/dexscreener.py utils/notifier.py` |
+| Compile core files | `py -3 -m py_compile main.py models/pair_signal.py models/scoring.py storage/postgres.py scrapers/dexscreener.py utils/notifier.py` |
 | Diagnose DEX scanner | `py -3 scripts/diagnose_dexscreener.py` |
 | Diagnose outbox | `py -3 scripts/diagnose_outbox.py` |
+| Diagnose conviction scores | `py -3 scripts/diagnose_scores.py` |
+| Preview daily digest (dry) | `py -3 scripts/daily_digest.py` |
 | Dry preflight | `py -3 .claude/skills/preflight/scripts/run_preflight.py` |
 | Live production run | `py -3 main.py` (LIVE-FIRE) |
 
@@ -95,13 +100,21 @@ emojis, buy-bot pressure bars, cashtags, action links, hashtags):
 - buy-pressure bar 🟢🔴 (8 ô, kèm % và buys/sells thô; ẩn khi < 10 txns);
 - price — pair · DEX · chain;
 - multi-horizon row (5m/1h/6h/24h);
+- conviction row `🎯 <score>/100 · <transmission chain>` — điểm tin cậy
+  deterministic 0–100 + chuỗi bằng chứng trung tính (vd `vol 3.2× gate · 71%
+  buys · m5+h1 aligned`); ẩn khi score = None (row cũ / scoring tắt);
 - volume · liquidity · market cap;
 - `⚠️ Low liquidity — DYOR` khi liquidity < $100k;
 - action row: 📈 Chart | 🔁 Swap (jup.ag cho Solana, Uniswap cho Ethereum);
 - hashtags `#TOKEN #Chain` + giờ ICT.
 
+Conviction score (`models/scoring.py`) là SỐ HỌC deterministic, không LLM,
+không opinion — `transmission_chain` chỉ dùng từ vựng trung tính, chịu test
+từ-cấm. Score CHỈ để hiển thị + lưu + augment routing premium; theo doctrine
+"thà noise còn hơn miss" nó KHÔNG BAO GIỜ chặn kênh chính.
+
 No sentiment line, no urgency labels, no AI disclaimer, no news layout. Tests
-in `tests/unit/test_signal_format.py` enforce zero banned words.
+in `tests/unit/test_signal_format.py` + `test_scoring.py` enforce zero banned words.
 
 ## Agent And Skill Policy
 
@@ -125,3 +138,26 @@ A change is valuable only if it improves at least one of these:
 - safer operations with fewer silent failures.
 
 Generic crypto-news features and LLM commentary are out of scope permanently.
+
+## Source Adapter Addendum
+
+The scanner now has an explicit source layer:
+
+- `sources/base.py` defines `PairSnapshot` and `SourceHealth`.
+- `sources/dexscreener_rest.py` is the production DEXScreener REST adapter.
+- `sources/normalize.py` converts provider payloads into normalized snapshots.
+- `signals/engine.py` evaluates deterministic trigger rules and builds `PairSignal`.
+- `scrapers/dexscreener.py` remains the compatibility facade for diagnostics and `main.py`.
+
+Source health is production telemetry, not a trading signal. Healthy source plus
+no trigger is healthy quiet. Degraded or unhealthy source plus no trigger means
+quiet is not trustworthy.
+
+New read-only diagnostics:
+
+- `py -3 scripts/diagnose_sources.py`
+- `py -3 scripts/diagnose_alert_rate.py`
+- `py -3 scripts/backtest_thresholds.py`
+
+Realtime sources must start as shadow/canary: no production `signals` writes,
+no Telegram sends, no promotion without explicit operator approval.

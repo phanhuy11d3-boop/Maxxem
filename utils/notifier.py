@@ -13,14 +13,48 @@ import time
 import logging
 import requests
 from datetime import datetime, timezone
+from functools import lru_cache
 from typing import Optional
 
-from models.pair_signal import PairSignal
+from models.pair_signal import (
+    HORIZON_LABEL, PairSignal, fmt_pct, fmt_price, fmt_usd_compact, magnitude_emojis,
+)
 
 logger = logging.getLogger(__name__)
 SLA_SECONDS = 120     # quan sát -> gửi quá 2 phút là vi phạm SLA tốc độ
 MAX_429_RETRIES = 2   # số lần retry in-process khi Telegram trả 429
 MAX_429_WAIT_S = 10   # trần chờ mỗi lần — giữ cadence pipeline không bị treo
+
+
+@lru_cache(maxsize=1)
+def _premium_min_score() -> Optional[int]:
+    """
+    Ngưỡng confidence để CŨNG đẩy alert sang premium (augment is_hot). None nếu
+    scoring tắt hoặc không cấu hình → routing premium giữ nguyên hành vi cũ
+    (chỉ is_hot). Cache 1 lần/process; import nội hàm tránh vòng lặp import.
+    """
+    try:
+        from scrapers.dexscreener import load_config
+        scoring = load_config().get("scoring") or {}
+        if not scoring.get("enabled", True):
+            return None
+        v = scoring.get("premium_min_score")
+        return int(v) if v is not None else None
+    except Exception as exc:  # config lỗi không được làm sập delivery
+        logger.warning("Không đọc được premium_min_score: %s", exc)
+        return None
+
+
+def _should_route_premium(signal: PairSignal) -> bool:
+    """Move nóng (is_hot) HOẶC điểm tin cậy đạt ngưỡng premium. Kênh chính luôn nhận."""
+    if signal.is_hot:
+        return True
+    threshold = _premium_min_score()
+    return (
+        threshold is not None
+        and signal.confidence_score is not None
+        and signal.confidence_score >= threshold
+    )
 
 
 def _is_main_channel(chat_id: str) -> bool:
@@ -95,8 +129,9 @@ def send_admin_alert(text: str) -> bool:
 def send_signal(signal: PairSignal) -> bool:
     """
     Gửi một PairSignal:
-    - Kênh chính (CHAT_ID): mọi signal vượt ngưỡng.
-    - Kênh premium (PREMIUM_CHAT_ID, optional): chỉ move nóng (signal.is_hot).
+    - Kênh chính (CHAT_ID): mọi signal vượt ngưỡng (doctrine "thà noise còn hơn miss").
+    - Kênh premium (PREMIUM_CHAT_ID, optional): move nóng (is_hot) HOẶC confidence
+      đạt scoring.premium_min_score.
     Trả về False chỉ khi kênh chính fail (premium fail chỉ log cảnh báo).
     """
     token = os.environ.get("BOT_TOKEN")
@@ -131,9 +166,9 @@ def send_signal(signal: PairSignal) -> bool:
             f"{html.escape(signal.pair_label)} {signal.change_pct:+.1f}% {signal.horizon}"
         )
 
-    # Kênh premium — chỉ move nóng, không ảnh hưởng kết quả trả về
+    # Kênh premium — move nóng HOẶC confidence cao, không ảnh hưởng kết quả trả về
     premium_chat_id = os.environ.get("PREMIUM_CHAT_ID", "").strip()
-    if premium_chat_id and signal.is_hot:
+    if premium_chat_id and _should_route_premium(signal):
         ok = _post_to_telegram(token, premium_chat_id, message_text, parse_mode="HTML")
         if ok:
             logger.info(f"✅ Đã gửi premium: {signal.pair_label}")
@@ -143,13 +178,75 @@ def send_signal(signal: PairSignal) -> bool:
     return success
 
 
+def render_digest_html(movers: list, window_label: str = "24h", ict_label: str = "") -> str:
+    """
+    Render bảng xếp hạng top-movers (pattern leaderboard market-rank của Binance).
+    Pure — không env/network — để test render độc lập.
+
+    movers: list dict đã sắp theo |change_pct| giảm dần, mỗi dict có
+    base_symbol, quote_symbol, chain_id, change_pct, horizon, price_usd,
+    volume_usd, confidence_score (optional). Mọi số từ DB, không opinion.
+    """
+    title = f"🏆 <b>CryptoSentinel — Top Movers {html.escape(window_label)}</b>"
+    if ict_label:
+        title += f"\n{html.escape(ict_label)}"
+    lines = [title, ""]
+    if not movers:
+        lines.append("😴 Không pair nào vượt ngưỡng trong cửa sổ này.")
+        return "\n".join(lines)
+
+    for i, m in enumerate(movers, 1):
+        cashtag = html.escape(f"${str(m.get('base_symbol', '')).upper().lstrip('$')}")
+        change = float(m.get("change_pct") or 0.0)
+        h_label = HORIZON_LABEL.get(m.get("horizon"), m.get("horizon") or "")
+        chain = html.escape(str(m.get("chain_id", "")).capitalize())
+        price = fmt_price(float(m.get("price_usd") or 0.0))
+        vol = fmt_usd_compact(float(m.get("volume_usd") or 0.0))
+        score = m.get("confidence_score")
+        score_tail = f" · 🎯 {int(score)}" if score is not None else ""
+        lines.append(
+            f"{i}. {magnitude_emojis(change)} <b>{cashtag} {fmt_pct(change)}</b> · "
+            f"{h_label} — {price} · {chain} · Vol {vol}{score_tail}"
+        )
+
+    lines.extend(["", "#CryptoSentinel #DEX"])
+    return "\n".join(lines)
+
+
+def send_digest(text: str) -> bool:
+    """
+    Gửi digest tới DIGEST_CHAT_ID (fallback CHAT_ID). LIVE-FIRE: gửi Telegram thật.
+    Digest KHÔNG đi qua outbox — là bản tổng kết, không phải price-alert nhạy giờ;
+    idempotency do scripts/daily_digest.py quản lý (1 digest/ngày UTC).
+    """
+    token = os.environ.get("BOT_TOKEN")
+    chat_id = (os.environ.get("DIGEST_CHAT_ID") or os.environ.get("CHAT_ID") or "").strip()
+    if not token or not chat_id:
+        logger.error("Thiếu BOT_TOKEN hoặc DIGEST_CHAT_ID/CHAT_ID — không gửi digest.")
+        return False
+    ok = _post_to_telegram(token, chat_id, text, parse_mode="HTML")
+    logger.info("✅ Digest gửi thành công." if ok else "❌ Digest gửi thất bại.")
+    return ok
+
+
+def _format_source_health_counts(counts: Optional[dict]) -> str:
+    if not counts:
+        return "n/a"
+    return (
+        f"healthy={int(counts.get('healthy') or 0)} | "
+        f"degraded={int(counts.get('degraded') or 0)} | "
+        f"unhealthy={int(counts.get('unhealthy') or 0)}"
+    )
+
+
 def send_heartbeat(scanned: int, triggered: int, new: int,
                    db_errors: int, tg_errors: int,
                    duration_s: float,
                    tg_sent_ok: int = 0,
                    api_errors: int = 0,
                    pending_count: int = 0, failed_count: int = 0,
-                   expired_count_60m: int = 0, oldest_pending_age_min: float = 0.0) -> bool:
+                   expired_count_60m: int = 0, oldest_pending_age_min: float = 0.0,
+                   source_health_counts: Optional[dict] = None) -> bool:
     """
     Báo cáo tổng kết mỗi lần chạy về kênh ops (không phải kênh signal).
 
@@ -196,6 +293,7 @@ def send_heartbeat(scanned: int, triggered: int, new: int,
         f"expired(60m)={expired_count_60m}\n"
         f"├ oldest_pending_age: {oldest_pending_age_min:.1f}m (cutoff 30m)\n"
         f"├ Errors — DB: {db_errors} | TG: {tg_errors} | API: {api_errors}\n"
+        f"├ Source health: {html.escape(_format_source_health_counts(source_health_counts))}\n"
         f"└ Duration: {duration_s:.1f}s"
     )
 

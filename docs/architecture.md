@@ -35,8 +35,10 @@ Shift tick (1 phút)
         │     │    GET /latest/dex/pairs/{chain}/{a1,a2,...}  (≤30/req)
         │     ├─ symbol match guard từng entry
         │     ├─ _trigger: liquidity gate → per-horizon threshold + volume gate
-        │     │    → khung mạnh nhất thắng
-        │     └─ build_signal → PairSignal (đầy đủ số liệu cấu trúc)
+        │     │    → khung mạnh nhất thắng (score KHÔNG tham gia gate này)
+        │     └─ build_signal → PairSignal (số liệu cấu trúc)
+        │           └─ models/scoring.py: confidence_score 0–100 +
+        │                transmission_chain (deterministic, display/route only)
         │
         ├─► insert_signals_batch                 (ON CONFLICT id DO NOTHING
         │                                         = cooldown dedup tại cổng DB,
@@ -54,11 +56,22 @@ Shift tick (1 phút)
 | Định danh | `chain_id`, `dex_id`, `pair_address`, `base_symbol`, `quote_symbol`, `url` |
 | Trigger | `horizon` (m5/h1/h6/h24), `change_pct` (dấu = hướng) |
 | Bằng chứng | `price_usd`, `volume_usd`, `liquidity_usd`, `buys`, `sells`, `changes{...}`, `fdv`, `market_cap` |
+| Conviction | `confidence_score` (0–100, Optional), `transmission_chain` (Optional) |
 | Meta | `observed_at` (UTC), `dedup_key`, `low_liquidity` |
 | Computed | `id = sha256(dedup_key)`, `pair_label`, `direction`, `is_hot` |
 
 `format_telegram_html()` render thẳng từ field cấu trúc — không parse text,
 không regex, không LLM.
+
+### Conviction layer (`models/scoring.py`)
+
+`confidence_score` = blend 5 sub-score deterministic (magnitude, volume,
+pressure, alignment, liquidity) theo `scoring.weights` (config, tự chuẩn hóa
+tổng = 1.0). `transmission_chain` = chuỗi bằng chứng trung tính (vd `vol 3.2×
+gate · 71% buys · m5+h1 aligned`). Cả hai Optional (None khi `scoring.enabled:
+false` hoặc row DB cũ → render bỏ qua). **Score không nằm trong `_trigger`**:
+nó không quyết định alert nổ hay không — chỉ hiển thị, lưu, và augment routing
+premium (`is_hot` OR `score ≥ scoring.premium_min_score`).
 
 ---
 
@@ -75,6 +88,8 @@ signals(
   change_m5, change_h1, change_h6, change_h24 DOUBLE PRECISION,
   fdv, market_cap DOUBLE PRECISION,
   low_liquidity BOOLEAN,
+  confidence_score INTEGER,           -- conviction 0–100 (NULL = row cũ/scoring tắt)
+  transmission_chain TEXT,            -- chuỗi bằng chứng trung tính
   observed_at TIMESTAMPTZ, created_at TIMESTAMPTZ,
   -- outbox state machine --
   tg_status TEXT DEFAULT 'pending',   -- pending|sent|failed|expired
@@ -114,5 +129,17 @@ Phân tích coverage: skill `cadence-check`.
 ## 6. Env
 
 Bắt buộc: `DATABASE_URL`, `BOT_TOKEN`, `CHAT_ID`.
-Tùy chọn: `PREMIUM_CHAT_ID` (move nóng), `ADMIN_CHAT_ID`, `HEARTBEAT_CHAT_ID`,
+Tùy chọn: `PREMIUM_CHAT_ID` (move nóng + score cao), `DIGEST_CHAT_ID` (daily
+digest, fallback `CHAT_ID`), `ADMIN_CHAT_ID`, `HEARTBEAT_CHAT_ID`,
 `ENABLE_OPS_TELEMETRY`. Không tồn tại biến LLM nào.
+
+---
+
+## 7. Daily digest (ngoài pipeline chính)
+
+`scripts/daily_digest.py` đọc `signals` 24h, xếp hạng top movers theo
+`|change_pct|` (distinct theo pair), render leaderboard qua
+`utils.notifier.render_digest_html`, gửi `DIGEST_CHAT_ID`. **Không đi qua
+outbox** (digest là tổng kết, không nhạy giờ). Idempotent 1 tin/ngày UTC qua
+`storage/digest_state.json` (ghi dấu chỉ sau khi gửi thành công). Live-fire khi
+`--live`; scheduler gọi 1 lần/ngày hoặc dùng skill `/daily-digest`.

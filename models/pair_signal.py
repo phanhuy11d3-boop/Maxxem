@@ -133,6 +133,18 @@ class PairSignal(BaseModel):
         description="True nếu thanh khoản dưới ngưỡng tin cậy — gắn cảnh báo DYOR.",
     )
 
+    # --- Conviction layer (deterministic, không LLM — xem models/scoring.py) ---
+    # Optional + default None để row DB cũ (cột NULL sau migration) không vỡ khi
+    # dựng lại qua _row_to_signal. Score KHÔNG BAO GIỜ chặn gửi — chỉ hiển thị/route.
+    confidence_score: Optional[int] = Field(
+        default=None, ge=0, le=100,
+        description="Độ tin cậy 0–100 tính từ biên độ/volume/áp lực/đồng pha/thanh khoản.",
+    )
+    transmission_chain: Optional[str] = Field(
+        default=None,
+        description="Chuỗi bằng chứng nhân quả trung tính, vd 'vol 3.2× gate · 71% buys'.",
+    )
+
     @field_validator("horizon")
     @classmethod
     def horizon_known(cls, v: str) -> str:
@@ -226,6 +238,12 @@ class PairSignal(BaseModel):
             )
             if multi:
                 lines.append(f"⏳ {multi}")
+
+        # Dòng conviction: chỉ hiện khi có điểm (row DB cũ NULL -> bỏ qua, không vỡ).
+        if self.confidence_score is not None:
+            chain = self.transmission_chain or ""
+            tail = f" · {html.escape(chain)}" if chain else ""
+            lines.append(f"🎯 <b>{self.confidence_score}</b>/100{tail}")
 
         stats = (
             f"📊 Vol {fmt_usd_compact(self.volume_usd)} · "

@@ -12,6 +12,10 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from scripts._env import load_dotenv_if_present  # noqa: E402
+
+load_dotenv_if_present(ROOT)
+
 from psycopg2.extras import RealDictCursor
 
 from storage.postgres import _get_pool  # noqa: E402

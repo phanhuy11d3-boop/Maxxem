@@ -24,6 +24,7 @@ from typing import Tuple
 from storage.postgres import (
     init_db, insert_signals_batch, get_tg_dispatch_queue,
     claim_tg_send_slot, mark_tg_attempt, expire_stale_tg_queue, get_outbox_kpis,
+    get_source_health_summary,
 )
 from scrapers.dexscreener import load_config, scan_watchlist
 from utils.notifier import send_signal, send_heartbeat, send_admin_alert
@@ -123,7 +124,7 @@ def run_pipeline() -> None:
         # Phase 3: Quét DEXScreener watchlist
         scanned_count = len(load_config().get("watchlist") or [])
         logger.info("3. Quét DEXScreener watchlist (%s pair)...", scanned_count)
-        signals, api_errors = scan_watchlist()
+        signals, api_errors = scan_watchlist(record_health=True)
         triggered_count = len(signals)
         if api_errors:
             # No-silent-quiet: API sập phải kêu, không được giả dạng thị trường im
@@ -154,6 +155,7 @@ def run_pipeline() -> None:
     finally:
         duration = time.monotonic() - start_time
         kpi = get_outbox_kpis(max_age_minutes=STALE_WINDOW_MINUTES)
+        source_health = get_source_health_summary(max_age_minutes=60)
         logger.info(
             f"=== Pipeline Hoàn Tất | "
             f"Scanned: {scanned_count} | Triggered: {triggered_count} | Mới: {new_count} | "
@@ -173,6 +175,7 @@ def run_pipeline() -> None:
             failed_count=kpi["failed_count"],
             expired_count_60m=kpi["expired_count_60m"],
             oldest_pending_age_min=kpi["oldest_pending_age_min"],
+            source_health_counts=source_health["counts"],
         )
         _update_state(db_errors=db_errors, tg_errors=tg_errors, api_errors=api_errors)
 

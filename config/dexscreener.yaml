@@ -12,6 +12,18 @@ thresholds_pct:
   h6: 3.0
   # 8 -> 4: flat market, JUP +5% h24 khong trigger — ha de co tin
   h24: 4.0
+# Conviction layer (deterministic, khong LLM — xem models/scoring.py).
+# Doctrine "tha noise con hon miss": score KHONG BAO GIO chan gui ra kenh chinh.
+# Chi hien thi + luu DB + tang cuong routing premium.
+scoring:
+  enabled: true            # false => khong tinh, field = None, render bo qua hoan toan
+  premium_min_score: 75    # >= diem nay CUNG day sang PREMIUM_CHAT_ID (augment is_hot)
+  weights:                 # code tu chuan hoa tong = 1.0; thieu key -> dung default
+    magnitude: 0.25        # vuot nguong bao xa
+    volume: 0.25           # volume tren gate bao nhieu lan
+    pressure: 0.20         # ap luc mua/ban dong huong gia
+    alignment: 0.15        # bao nhieu khung cung dau
+    liquidity: 0.15        # thanh khoan day = dang tin hon
 watchlist:
   # query chỉ dùng cho diagnose/khám phá; production luôn fetch theo pairAddress.
   # Majors (SOL/WETH/WBTC) có per-pair thresholds_pct thấp hơn global:

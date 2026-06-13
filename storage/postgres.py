@@ -25,6 +25,7 @@ from psycopg2 import pool
 from psycopg2.extras import RealDictCursor, execute_values
 
 from models.pair_signal import HORIZONS, PairSignal
+from sources.base import SourceHealth
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +102,8 @@ def init_db():
                     fdv DOUBLE PRECISION,
                     market_cap DOUBLE PRECISION,
                     low_liquidity BOOLEAN DEFAULT FALSE,
+                    confidence_score INTEGER,
+                    transmission_chain TEXT,
                     observed_at TIMESTAMPTZ NOT NULL,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     tg_status TEXT NOT NULL DEFAULT 'pending',
@@ -115,7 +118,30 @@ def init_db():
                 "ALTER TABLE signals ADD COLUMN IF NOT EXISTS base_address TEXT"
             )
             cursor.execute(
+                "ALTER TABLE signals ADD COLUMN IF NOT EXISTS confidence_score INTEGER"
+            )
+            cursor.execute(
+                "ALTER TABLE signals ADD COLUMN IF NOT EXISTS transmission_chain TEXT"
+            )
+            cursor.execute(
                 "CREATE INDEX IF NOT EXISTS idx_signals_outbox ON signals(tg_status, observed_at)"
+            )
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS source_health (
+                    source TEXT NOT NULL,
+                    chain_id TEXT NOT NULL,
+                    stream_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    last_seen_at TIMESTAMPTZ,
+                    last_error TEXT,
+                    consecutive_errors INTEGER NOT NULL DEFAULT 0,
+                    messages_seen INTEGER NOT NULL DEFAULT 0,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (source, chain_id, stream_id)
+                )
+            ''')
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_source_health_status ON source_health(status, updated_at)"
             )
         conn.commit()
         logger.info("✅ DB schema signals sẵn sàng.")
@@ -128,6 +154,91 @@ def init_db():
 
 
 # ===========================================================================
+# Source health
+# ===========================================================================
+
+def record_source_health(health: SourceHealth) -> None:
+    """Persist one source-health observation. Best-effort callers may swallow errors."""
+    conn = _get_pool().getconn()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO source_health (
+                    source, chain_id, stream_id, status, last_seen_at, last_error,
+                    consecutive_errors, messages_seen, updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s,
+                        CASE WHEN %s = 'healthy' THEN 0 ELSE 1 END,
+                        %s, %s)
+                ON CONFLICT (source, chain_id, stream_id) DO UPDATE SET
+                    status = EXCLUDED.status,
+                    last_seen_at = COALESCE(EXCLUDED.last_seen_at, source_health.last_seen_at),
+                    last_error = EXCLUDED.last_error,
+                    consecutive_errors = CASE
+                        WHEN EXCLUDED.status = 'healthy' THEN 0
+                        ELSE source_health.consecutive_errors + 1
+                    END,
+                    messages_seen = source_health.messages_seen + EXCLUDED.messages_seen,
+                    updated_at = EXCLUDED.updated_at
+                """,
+                (
+                    health.source,
+                    health.chain_id,
+                    health.stream_id,
+                    health.status,
+                    health.last_seen_at,
+                    health.last_error,
+                    health.status,
+                    int(health.messages_seen),
+                    health.updated_at,
+                ),
+            )
+        conn.commit()
+    except psycopg2.Error as e:
+        conn.rollback()
+        logger.error("Lá»—i khi record_source_health: %s", e)
+        raise
+    finally:
+        _get_pool().putconn(conn)
+
+
+def get_source_health_rows(max_age_minutes: int = 60) -> list[dict]:
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=max_age_minutes)
+    conn = _get_pool().getconn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                SELECT
+                  source, chain_id, stream_id, status, last_seen_at, last_error,
+                  consecutive_errors, messages_seen, updated_at,
+                  EXTRACT(EPOCH FROM (NOW() - COALESCE(last_seen_at, updated_at))) / 60.0
+                    AS age_min
+                FROM source_health
+                WHERE updated_at >= %s
+                ORDER BY source, chain_id, stream_id
+                """,
+                (cutoff,),
+            )
+            return [dict(row) for row in cursor.fetchall()]
+    except psycopg2.Error as e:
+        logger.error("Lá»—i khi get_source_health_rows: %s", e)
+        return []
+    finally:
+        _get_pool().putconn(conn)
+
+
+def get_source_health_summary(max_age_minutes: int = 60) -> dict:
+    rows = get_source_health_rows(max_age_minutes=max_age_minutes)
+    counts = {"healthy": 0, "degraded": 0, "unhealthy": 0, "unknown": 0}
+    for row in rows:
+        status = str(row.get("status") or "unknown")
+        counts[status if status in counts else "unknown"] += 1
+    return {"rows": rows, "counts": counts}
+
+
+# ===========================================================================
 # Insert (dedup gateway)
 # ===========================================================================
 
@@ -135,7 +246,7 @@ _INSERT_COLS = (
     "id, dedup_key, chain_id, dex_id, pair_address, base_symbol, quote_symbol, "
     "base_address, url, horizon, change_pct, price_usd, volume_usd, liquidity_usd, "
     "buys, sells, change_m5, change_h1, change_h6, change_h24, fdv, market_cap, "
-    "low_liquidity, observed_at, tg_status, tg_attempts"
+    "low_liquidity, confidence_score, transmission_chain, observed_at, tg_status, tg_attempts"
 )
 
 
@@ -148,6 +259,7 @@ def _insert_row(sig: PairSignal) -> tuple:
         sig.changes.get("m5"), sig.changes.get("h1"),
         sig.changes.get("h6"), sig.changes.get("h24"),
         sig.fdv, sig.market_cap, sig.low_liquidity,
+        sig.confidence_score, sig.transmission_chain,
         sig.observed_at, "pending", 0,
     )
 
@@ -223,6 +335,10 @@ def _row_to_signal(row: dict) -> PairSignal:
         observed_at=row["observed_at"],
         dedup_key=row["dedup_key"],
         low_liquidity=bool(row.get("low_liquidity", False)),
+        # NULL-safe: row cũ trước migration không có cột này -> None, render bỏ qua.
+        confidence_score=(int(row["confidence_score"])
+                          if row.get("confidence_score") is not None else None),
+        transmission_chain=row.get("transmission_chain"),
     )
 
 
@@ -237,7 +353,15 @@ def get_tg_dispatch_queue(max_age_minutes: int = 30, max_attempts: int = 3) -> L
                    WHERE tg_status IN ('pending', 'failed')
                      AND tg_attempts < %s
                      AND observed_at > %s
-                   ORDER BY observed_at DESC""",
+                   ORDER BY
+                     CASE
+                       WHEN (horizon = 'm5' AND ABS(change_pct) >= 8)
+                         OR ABS(change_pct) >= 15
+                       THEN 1 ELSE 0
+                     END DESC,
+                     confidence_score DESC NULLS LAST,
+                     ABS(change_pct) DESC,
+                     observed_at DESC""",
                 (max_attempts, cutoff),
             )
             rows = cursor.fetchall()
