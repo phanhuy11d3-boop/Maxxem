@@ -28,6 +28,7 @@ def _signal(**overrides) -> PairSignal:
         buys=221,
         sells=109,
         changes={"m5": 1.1, "h1": 12.4, "h6": 8.0, "h24": 15.3},
+        fdv=2_300_000_000,
         market_cap=2_200_000_000,
         observed_at=datetime(2026, 6, 12, 16, 4, tzinfo=timezone.utc),
         dedup_key="dex:solana:ExamplePair:h1:UP:202606121600",
@@ -46,7 +47,8 @@ def test_format_market_style_full_evidence():
     assert "$2.35" in text and "WIF/SOL" in text
     assert "Raydium · Solana" in text
     assert "5m +1.1% | 1h +12.4% | 6h +8.0% | 24h +15.3%" in text
-    assert "Vol $850.0K" in text and "Liq $2.4M" in text and "MC $2.2B" in text
+    assert "Vol $850.0K" in text and "Liq $2.4M" in text
+    assert "MC $2.2B" in text and "FDV $2.3B" in text
     # Hàng hành động: Chart + Swap (solana -> jup.ag với mint thật)
     assert "dexscreener.com" in text
     assert "jup.ag/swap/SOL-EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm" in text
@@ -110,6 +112,15 @@ def test_format_minimal_data_still_renders():
     assert "⏳" not in text and "MC" not in text
     assert "Swap" not in text          # không base_address -> không link Swap
     assert "🟢 2 buys · 🔴 1 sells" in text  # ít txn -> không bar, rơi về số thô
+
+
+def test_format_cleans_dirty_symbols_from_old_rows():
+    text = _signal(base_symbol=" $FARTCOIN ", quote_symbol=" SOL ").format_telegram_html()
+    assert "$FARTCOIN" in text
+    assert "FARTCOIN/SOL" in text
+    assert "#FARTCOIN #Solana" in text
+    assert "FARTCOIN /SOL" not in text
+    assert "#FARTCOIN  #Solana" not in text
 
 
 def test_swap_url_only_for_mapped_chains():

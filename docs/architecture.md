@@ -61,7 +61,9 @@ Shift tick (1 phút)
 | Computed | `id = sha256(dedup_key)`, `pair_label`, `direction`, `is_hot` |
 
 `format_telegram_html()` render thẳng từ field cấu trúc — không parse text,
-không regex, không LLM.
+không regex, không LLM. Các field backend có ý nghĩa đọc alert (`market_cap`,
+`fdv`, `confidence_score`, link `Swap` khi chain hỗ trợ) phải có đường hiển thị;
+`scripts/diagnose_render_alignment.py` kiểm tra read-only để tránh silent drift.
 
 ### Conviction layer (`models/scoring.py`)
 

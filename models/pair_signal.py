@@ -88,6 +88,11 @@ def fmt_pct(value: float) -> str:
     return f"{sign}{value:.1f}%"
 
 
+def clean_symbol(value: str) -> str:
+    """Canonical token symbol for display: no cashtag prefix or surrounding spaces."""
+    return str(value or "").strip().lstrip("$").strip()
+
+
 class PairSignal(BaseModel):
     """Một alert biến động giá pair — đơn vị dữ liệu duy nhất của pipeline."""
 
@@ -152,6 +157,21 @@ class PairSignal(BaseModel):
             raise ValueError(f"horizon phải thuộc {HORIZONS}")
         return v
 
+    @field_validator("base_symbol", "quote_symbol")
+    @classmethod
+    def symbols_clean(cls, v: str) -> str:
+        cleaned = clean_symbol(v).upper()
+        if not cleaned:
+            raise ValueError("symbol không được rỗng")
+        return cleaned
+
+    @field_validator("chain_id", "dex_id", "pair_address", "base_address", "url")
+    @classmethod
+    def identifiers_strip(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        return str(v).strip()
+
     @field_validator("observed_at")
     @classmethod
     def ensure_utc(cls, v: datetime) -> datetime:
@@ -168,7 +188,7 @@ class PairSignal(BaseModel):
 
     @property
     def pair_label(self) -> str:
-        return f"{self.base_symbol.upper()}/{self.quote_symbol.upper()}"
+        return f"{clean_symbol(self.base_symbol).upper()}/{clean_symbol(self.quote_symbol).upper()}"
 
     @property
     def direction(self) -> str:
@@ -212,7 +232,9 @@ class PairSignal(BaseModel):
         tap-được, thanh áp lực mua 🟢🔴, hàng link hành động Chart|Swap,
         hashtag lọc coin. Mọi con số vẫn 100% từ API — không opinion.
         """
-        cashtag = html.escape(f"${self.base_symbol.upper().lstrip('$')}")
+        base_symbol = clean_symbol(self.base_symbol).upper()
+        quote_symbol = clean_symbol(self.quote_symbol).upper()
+        cashtag = html.escape(f"${base_symbol}")
         h_label = HORIZON_LABEL[self.horizon]
         hot = " ⚡" if self.is_hot else ""
         dex = html.escape(self.dex_id.capitalize()) if self.dex_id else ""
@@ -228,7 +250,7 @@ class PairSignal(BaseModel):
 
         lines.extend([
             "",
-            f"💰 {fmt_price(self.price_usd)} — {html.escape(self.pair_label)} · {venue}",
+            f"💰 {fmt_price(self.price_usd)} — {html.escape(f'{base_symbol}/{quote_symbol}')} · {venue}",
         ])
 
         if self.changes:
@@ -251,6 +273,8 @@ class PairSignal(BaseModel):
         )
         if self.market_cap:
             stats += f" · 🧢 MC {fmt_usd_compact(self.market_cap)}"
+        if self.fdv:
+            stats += f" · FDV {fmt_usd_compact(self.fdv)}"
         lines.append(stats)
         if not bar and (self.buys or self.sells):
             lines.append(f"🟢 {self.buys:,} buys · 🔴 {self.sells:,} sells")
@@ -262,7 +286,7 @@ class PairSignal(BaseModel):
         if self.swap_url:
             actions += f' | <a href="{html.escape(self.swap_url)}">🔁 Swap</a>'
         obs_ict = self.observed_at.astimezone(timezone(timedelta(hours=7))).strftime("%H:%M")
-        tags = f"#{self.base_symbol.upper().lstrip('$')} #{self.chain_id.capitalize()}"
+        tags = f"#{base_symbol} #{self.chain_id.capitalize()}"
         lines.extend(["", actions, f"{html.escape(tags)} ⏱ {obs_ict} ICT"])
         return "\n".join(lines)
 
